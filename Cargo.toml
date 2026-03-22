@@ -1,0 +1,14 @@
+[package]
+name = "ayeyaiyai"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+num-bigint = "0.4.6"
+swc_common = "19.0.0"
+swc_ecma_ast = "21.0.0"
+swc_ecma_parser = "35.0.0"
+tempfile = "3.23.0"
+walkdir = "2.5.0"

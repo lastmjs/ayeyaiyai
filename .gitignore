@@ -1,0 +1,17 @@
+# Rust build outputs
+/target/
+
+# Generated compiler outputs
+*.wasm
+
+# Local test runner caches and probe artifacts
+/.artifacts/
+/.cache/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
