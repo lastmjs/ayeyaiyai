@@ -12,8 +12,8 @@ pub use compile_options::CompileOptions;
 
 pub fn compile_file(path: &Path, options: &CompileOptions) -> Result<()> {
     let program = frontend::bundle_script_entry(path)?;
-    ir::aot::validate_refined_aot(&program)?;
-    let program = ir::aot::lower_static_function_constructors(program)?;
+    ir::passes::refined_aot::validate(&program)?;
+    let program = ir::passes::static_function_constructors::lower(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -27,8 +27,8 @@ pub fn compile_file_with_goal(path: &Path, options: &CompileOptions, module: boo
     } else {
         frontend::bundle_script_entry(path)?
     };
-    ir::aot::validate_refined_aot(&program)?;
-    let program = ir::aot::lower_static_function_constructors(program)?;
+    ir::passes::refined_aot::validate(&program)?;
+    let program = ir::passes::static_function_constructors::lower(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -49,8 +49,8 @@ pub fn compile_source_with_goal(
     } else {
         frontend::parse(source)?
     };
-    ir::aot::validate_refined_aot(&program)?;
-    let program = ir::aot::lower_static_function_constructors(program)?;
+    ir::passes::refined_aot::validate(&program)?;
+    let program = ir::passes::static_function_constructors::lower(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -59,9 +59,10 @@ pub fn compile_source_with_goal(
 
 pub fn compile_source_with_reason(source: &str) -> std::result::Result<(), String> {
     let program = frontend::parse(source).map_err(|_| "source failed to parse".to_string())?;
-    ir::aot::validate_refined_aot(&program).map_err(|_| "aot validation failed".to_string())?;
-    let program = ir::aot::lower_static_function_constructors(program)
-        .map_err(|_| "aot lowering failed".to_string())?;
+    ir::passes::refined_aot::validate(&program)
+        .map_err(|_| "refined aot validation failed".to_string())?;
+    let program = ir::passes::static_function_constructors::lower(program)
+        .map_err(|_| "static function constructor lowering failed".to_string())?;
     match backend::emit_wasm_with_reason(&program) {
         Ok(_) => Ok(()),
         Err(message) => Err(message.to_string()),

@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn collect_var_decl_bound_names(
+pub(crate) fn collect_var_decl_bound_names(
     variable_declaration: &swc_ecma_ast::VarDecl,
 ) -> Result<Vec<String>> {
     let mut names = Vec::new();
@@ -12,7 +12,7 @@ pub(super) fn collect_var_decl_bound_names(
     Ok(names)
 }
 
-pub(super) fn collect_module_declared_names(module: &Module) -> Result<HashSet<String>> {
+pub(crate) fn collect_module_declared_names(module: &Module) -> Result<HashSet<String>> {
     let mut names = HashSet::new();
 
     for item in &module.body {
@@ -45,7 +45,7 @@ pub(super) fn collect_module_declared_names(module: &Module) -> Result<HashSet<S
     Ok(names)
 }
 
-pub(super) fn ensure_module_lexical_names_are_unique(module: &Module) -> Result<()> {
+pub(crate) fn ensure_module_lexical_names_are_unique(module: &Module) -> Result<()> {
     let mut seen = HashSet::new();
 
     for item in &module.body {
@@ -134,7 +134,7 @@ pub(super) fn ensure_module_lexical_names_are_unique(module: &Module) -> Result<
     Ok(())
 }
 
-pub(super) fn validate_statement_syntax(
+pub(crate) fn validate_statement_syntax(
     statement: &Stmt,
     file: &swc_common::SourceFile,
 ) -> Result<()> {
@@ -238,7 +238,7 @@ pub(super) fn validate_statement_syntax(
     Ok(())
 }
 
-pub(super) fn collect_pattern_binding_names(pattern: &Pat, names: &mut Vec<String>) -> Result<()> {
+pub(crate) fn collect_pattern_binding_names(pattern: &Pat, names: &mut Vec<String>) -> Result<()> {
     match pattern {
         Pat::Ident(identifier) => {
             let name = identifier.id.sym.to_string();
@@ -421,7 +421,7 @@ fn collect_var_declared_names_from_statement_list(statements: &[Stmt]) -> Result
     Ok(names)
 }
 
-pub(super) fn validate_declaration_syntax(
+pub(crate) fn validate_declaration_syntax(
     declaration: &Decl,
     file: &swc_common::SourceFile,
 ) -> Result<()> {
@@ -496,7 +496,7 @@ fn validate_pattern_syntax(pattern: &Pat, file: &swc_common::SourceFile) -> Resu
     Ok(())
 }
 
-pub(super) fn validate_function_syntax(
+pub(crate) fn validate_function_syntax(
     function: &Function,
     file: &swc_common::SourceFile,
 ) -> Result<()> {
@@ -548,7 +548,7 @@ fn ensure_parameter_names_are_valid<'a>(
     Ok(())
 }
 
-pub(super) fn validate_class_syntax(class: &Class, file: &swc_common::SourceFile) -> Result<()> {
+pub(crate) fn validate_class_syntax(class: &Class, file: &swc_common::SourceFile) -> Result<()> {
     if let Some(super_class) = &class.super_class {
         validate_expression_syntax(super_class, file)?;
     }
@@ -615,7 +615,7 @@ fn validate_property_name_syntax(name: &PropName, file: &swc_common::SourceFile)
     Ok(())
 }
 
-pub(super) fn validate_expression_syntax(
+pub(crate) fn validate_expression_syntax(
     expression: &Expr,
     file: &swc_common::SourceFile,
 ) -> Result<()> {

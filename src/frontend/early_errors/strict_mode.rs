@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn validate_strict_mode_early_errors_in_module_items(
+pub(crate) fn validate_strict_mode_early_errors_in_module_items(
     items: &[ModuleItem],
     strict: bool,
 ) -> Result<()> {
@@ -33,7 +33,7 @@ pub(super) fn validate_strict_mode_early_errors_in_module_items(
     Ok(())
 }
 
-pub(super) fn validate_strict_mode_early_errors_in_statements(
+pub(crate) fn validate_strict_mode_early_errors_in_statements(
     statements: &[Stmt],
     strict: bool,
 ) -> Result<()> {
@@ -543,7 +543,7 @@ fn is_strict_mode_restricted_identifier(name: &str) -> bool {
     matches!(name, "eval" | "arguments")
 }
 
-pub(super) fn script_has_use_strict_directive(statements: &[Stmt]) -> bool {
+pub(crate) fn script_has_use_strict_directive(statements: &[Stmt]) -> bool {
     for statement in statements {
         let Stmt::Expr(ExprStmt { expr, .. }) = statement else {
             break;
@@ -561,7 +561,7 @@ pub(super) fn script_has_use_strict_directive(statements: &[Stmt]) -> bool {
     false
 }
 
-pub(super) fn function_has_use_strict_directive(function: &Function) -> bool {
+pub(crate) fn function_has_use_strict_directive(function: &Function) -> bool {
     let Some(body) = &function.body else {
         return false;
     };

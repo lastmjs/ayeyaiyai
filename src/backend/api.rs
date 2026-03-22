@@ -1,3 +1,9 @@
+use std::{fs, path::Path};
+
+use anyhow::{Context, Result};
+
+use crate::{CompileOptions, ir::hir::Program};
+
 pub fn compile_if_supported(program: &Program, options: &CompileOptions) -> Result<bool> {
     let Some(wasm_bytes) = emit_wasm(program)? else {
         return Ok(false);
@@ -7,18 +13,11 @@ pub fn compile_if_supported(program: &Program, options: &CompileOptions) -> Resu
 }
 
 pub fn emit_wasm(program: &Program) -> Result<Option<Vec<u8>>> {
-    let mut compiler = DirectWasmCompiler::default();
-    match compiler.compile(program) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(Unsupported(_)) => Ok(None),
-    }
+    super::direct_wasm::try_emit_wasm(program)
 }
 
 pub fn emit_wasm_with_reason(program: &Program) -> std::result::Result<Vec<u8>, &'static str> {
-    let mut compiler = DirectWasmCompiler::default();
-    compiler
-        .compile(program)
-        .map_err(|Unsupported(message)| message)
+    super::direct_wasm::emit_wasm_with_reason(program)
 }
 
 fn write_output(path: &Path, contents: &[u8]) -> Result<()> {
@@ -32,4 +31,3 @@ fn write_output(path: &Path, contents: &[u8]) -> Result<()> {
 
     Ok(())
 }
-

@@ -1,46 +1,12 @@
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
-    fs,
-    path::{Path, PathBuf},
-};
+mod early_errors;
+mod lowering;
+mod modules;
+mod parse;
 
-use anyhow::{Context, Result, bail, ensure};
-use swc_common::{FileName, SourceMap, Span, source_map::SmallPos, sync::Lrc};
-use swc_ecma_ast::{
-    ArrowExpr, AssignOp, AssignTarget, BinaryOp as SwcBinaryOp, BindingIdent, BlockStmt,
-    BlockStmtOrExpr, BreakStmt, Callee, Class, ClassDecl, ClassMember, ClassMethod, Constructor,
-    ContinueStmt, Decl, DefaultDecl, ExportDefaultDecl, ExportSpecifier, Expr, ExprStmt, FnDecl,
-    FnExpr, ForHead, ForInStmt, ForOfStmt, Function, ImportDecl, ImportSpecifier, LabeledStmt, Lit,
-    MemberProp, MetaPropKind, MethodKind, Module, ModuleDecl, ModuleExportName, ModuleItem,
-    ObjectLit, ObjectPatProp, ParamOrTsParamProp, Pat, Program as SwcProgram, Prop, PropName,
-    PropOrSpread, SimpleAssignTarget, Stmt, SuperProp, SuperPropExpr, SwitchStmt,
-    UnaryOp as SwcUnaryOp, UpdateOp as SwcUpdateOp, VarDeclKind, VarDeclOrExpr, WithStmt,
+pub use modules::{bundle_module_entry, bundle_script_entry};
+pub use parse::{
+    parse, parse_module_goal, parse_module_goal_with_path, parse_script_goal, validate_script_goal,
 };
-use swc_ecma_parser::{Parser, StringInput, Syntax, lexer::Lexer};
-
-use crate::ir::hir::{
-    ArrayElement, BinaryOp, CallArgument, Expression, FunctionDeclaration, FunctionKind,
-    ObjectEntry, Parameter, Program, Statement, SwitchCase, UnaryOp, UpdateOp,
-};
-
-mod strict_mode;
-mod syntax;
-
-use strict_mode::{
-    function_has_use_strict_directive, script_has_use_strict_directive,
-    validate_strict_mode_early_errors_in_module_items,
-    validate_strict_mode_early_errors_in_statements,
-};
-use syntax::{
-    collect_module_declared_names, collect_pattern_binding_names, collect_var_decl_bound_names,
-    ensure_module_lexical_names_are_unique, validate_class_syntax, validate_declaration_syntax,
-    validate_expression_syntax, validate_function_syntax, validate_statement_syntax,
-};
-
-include!("parse.rs");
-include!("bundle.rs");
-include!("lowering.rs");
 
 #[cfg(test)]
 mod parse_tests;

@@ -1,3 +1,18 @@
+use std::collections::HashSet;
+
+use anyhow::{Context, Result, bail};
+
+use crate::ir::hir::{
+    ArrayElement, CallArgument, Expression, FunctionDeclaration, ObjectEntry, Program, Statement,
+    SwitchCase,
+};
+
+use super::support::{collect_statement_bindings, function_constructor_literal_source_parts};
+
+pub fn lower(program: Program) -> Result<Program> {
+    StaticFunctionConstructorLowerer::new(&program).lower(program)
+}
+
 struct StaticFunctionConstructorLowerer {
     scopes: Vec<HashSet<String>>,
     global_scope: HashSet<String>,
