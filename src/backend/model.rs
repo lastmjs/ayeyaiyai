@@ -293,8 +293,6 @@ enum StaticEvalOutcome {
 #[derive(Clone, Copy)]
 enum PrimitiveHint {
     Default,
-    Number,
-    String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -753,4 +751,3 @@ struct FunctionCompiler<'a> {
 struct TryContext {
     catch_target: usize,
 }
-

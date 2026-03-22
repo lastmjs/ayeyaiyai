@@ -1,10 +1,4 @@
-use std::{fs, process::Command};
-
-use crate::{
-    CompileOptions, compile_file, compile_file_with_goal, compile_source,
-    compile_source_with_goal, emit_wasm, frontend,
-    ir::hir::{Expression, Statement, UpdateOp},
-};
+use crate::{CompileOptions, compile_source, emit_wasm, frontend};
 
 #[test]
 fn emits_direct_wasm_bytes_for_supported_top_level_programs() {
@@ -76,9 +70,9 @@ fn emits_direct_wasm_bytes_for_integer_exponentiation() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program)
-        .unwrap()
-        .expect("direct wasm backend should support integer exponentiation with numeric literal exponent");
+    let wasm = emit_wasm(&program).unwrap().expect(
+        "direct wasm backend should support integer exponentiation with numeric literal exponent",
+    );
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -101,532 +95,6 @@ fn emits_direct_wasm_bytes_for_variable_exponentiation() {
         .expect("direct wasm backend should support variable exponentiation");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
-}
-
-#[test]
-fn parses_asi_prefix_increment_as_separate_expression_statements() {
-    let program = frontend::parse(
-        r#"
-        var x = 0;
-        var y = 0;
-        x
-        ++y
-        "#,
-    )
-    .unwrap();
-
-    assert!(
-        matches!(
-            program.statements.as_slice(),
-            [
-                Statement::Var { name: first_name, .. },
-                Statement::Assign {
-                    name: first_assign_name,
-                    value: Expression::Number(first_value),
-                },
-                Statement::Var { name: second_name, .. },
-                Statement::Assign {
-                    name: second_assign_name,
-                    value: Expression::Number(second_value),
-                },
-                Statement::Expression(Expression::Identifier(name)),
-                Statement::Expression(Expression::Update {
-                    name: update_name,
-                    op: UpdateOp::Increment,
-                    prefix: true,
-                }),
-            ] if first_name == "x"
-                && first_assign_name == "x"
-                && *first_value == 0.0
-                && second_name == "y"
-                && second_assign_name == "y"
-                && *second_value == 0.0
-                && name == "x"
-                && update_name == "y"
-        ),
-        "{:#?}",
-        program.statements
-    );
-}
-
-#[test]
-fn parses_asi_prefix_decrement_as_separate_expression_statements() {
-    let program = frontend::parse(
-        r#"
-        var x = 1;
-        var y = 1;
-        x
-        --y
-        "#,
-    )
-    .unwrap();
-
-    assert!(
-        matches!(
-            program.statements.as_slice(),
-            [
-                Statement::Var { name: first_name, .. },
-                Statement::Assign {
-                    name: first_assign_name,
-                    value: Expression::Number(first_value),
-                },
-                Statement::Var { name: second_name, .. },
-                Statement::Assign {
-                    name: second_assign_name,
-                    value: Expression::Number(second_value),
-                },
-                Statement::Expression(Expression::Identifier(name)),
-                Statement::Expression(Expression::Update {
-                    name: update_name,
-                    op: UpdateOp::Decrement,
-                    prefix: true,
-                }),
-            ] if first_name == "x"
-                && first_assign_name == "x"
-                && *first_value == 1.0
-                && second_name == "y"
-                && second_assign_name == "y"
-                && *second_value == 1.0
-                && name == "x"
-                && update_name == "y"
-        ),
-        "{:#?}",
-        program.statements
-    );
-}
-
-#[test]
-fn rejects_classic_for_headers_with_only_one_semicolon() {
-    let invalid_sources = [
-        "for(false;false\n) { break; }",
-        "for(false;\nfalse\n) { break; }",
-        "for(false\n    ;\n) { break; }",
-        "for(false\n    ;false\n) { break; }",
-        "for(\n;false) { break; }",
-    ];
-
-    for source in invalid_sources {
-        assert!(
-            frontend::validate_script_goal(source).is_err(),
-            "source should fail to parse:\n{source}"
-        );
-    }
-}
-
-#[test]
-fn accepts_classic_for_headers_with_two_semicolons_across_newlines() {
-    let source = r#"
-    for(false
-        ;false
-        ;
-    ) {
-      break;
-    }
-    "#;
-
-    frontend::validate_script_goal(source).expect("source should parse");
-}
-
-#[test]
-fn compile_options_are_constructible() {
-    let options = CompileOptions {
-        output: "out.wasm".into(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    assert_eq!(options.target, "wasm32-wasip2");
-}
-
-#[test]
-fn compile_file_accepts_numeric_functions_on_the_direct_wasm_path() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("numeric-functions.js");
-    let output = tempdir.path().join("numeric-functions.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        function sumTo(limit) {
-          let total = 0;
-
-          for (let i = 0; i <= limit; i++) {
-            total = total + i;
-          }
-
-          return total;
-        }
-
-        let counter = 1;
-        let before = counter++;
-        let after = ++counter;
-
-        console.log("sum", sumTo(5), before, after);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-    assert!(output.exists());
-}
-
-#[test]
-fn rejects_module_goal_sources_without_module_support() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let output = tempdir.path().join("module.wasm");
-    let options = CompileOptions {
-        output,
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_source_with_goal(
-        r#"
-        let value = 1;
-        console.log(value);
-        "#,
-        &options,
-        true,
-    )
-    .expect_err("module goals are not yet supported by direct wasm backend");
-}
-
-#[test]
-fn compile_file_uses_direct_wasm_backend_for_supported_programs() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("direct-wasm.js");
-    let output = tempdir.path().join("direct-wasm.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        let total = 0;
-        let i = 1;
-
-        while (i <= 3) {
-          total = total + i;
-          i = i + 1;
-        }
-
-        if (total === 6) {
-          console.log("ok");
-        } else {
-          console.log("bad");
-        }
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "ok\n");
-}
-
-#[test]
-fn compile_file_executes_for_of_continue_via_direct_wasm_backend() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("for-of-continue.js");
-    let output = tempdir.path().join("for-of-continue.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        let sum = 0;
-        for (const value of [1, 2, 3]) {
-          if (value === 2) {
-            continue;
-          }
-          sum = sum + value;
-        }
-        console.log(sum);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "4\n");
-}
-
-#[test]
-fn compile_file_executes_nested_for_of_labeled_continue_outer_loop_via_direct_wasm_backend() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("nested-for-of-labeled-continue.js");
-    let output = tempdir.path().join("nested-for-of-labeled-continue.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        let sum = 0;
-        outer: for (const outer_value of [1, 2, 3]) {
-          for (const inner_value of [4, 5, 6]) {
-            if (inner_value === 5) {
-              continue outer;
-            }
-            sum = sum + inner_value;
-          }
-        }
-        console.log(sum);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "12\n");
-}
-
-#[test]
-fn compile_file_executes_nested_for_of_continue_outer_loop_closes_inner_only() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir
-        .path()
-        .join("nested-for-of-labeled-continue-inner-close.js");
-    let output = tempdir
-        .path()
-        .join("nested-for-of-labeled-continue-inner-close.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        function makeIterable(values, tracker) {
-          let index = 0;
-          const iterator = {
-            next: function () {
-              if (index >= values.length) {
-                return { done: true };
-              }
-              return { value: values[index++], done: false };
-            },
-            return: function () {
-              tracker.value = tracker.value + 1;
-              return { done: true };
-            },
-          };
-
-          iterator[Symbol.iterator] = function () {
-            return iterator;
-          };
-
-          return iterator;
-        }
-
-        let outerClosed = { value: 0 };
-        let innerClosed = { value: 0 };
-
-        outer: for (const outerValue of makeIterable([1, 2], outerClosed)) {
-          for (const innerValue of makeIterable([4, 5], innerClosed)) {
-            if (innerValue === 5) {
-              continue outer;
-            }
-            let skip = outerValue + innerValue;
-          }
-        }
-
-        console.log(outerClosed.value, innerClosed.value);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "0 2\n");
-}
-
-#[test]
-fn compile_file_executes_nested_for_of_labeled_break_outer_loop_via_direct_wasm_backend() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("nested-for-of-labeled-break.js");
-    let output = tempdir.path().join("nested-for-of-labeled-break.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        let sum = 0;
-        outer: for (const outer_value of [1, 2, 3]) {
-          for (const inner_value of [4, 5, 6]) {
-            if (inner_value === 5) {
-              break outer;
-            }
-            sum = sum + inner_value;
-          }
-        }
-        console.log(sum);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "4\n");
-}
-
-#[test]
-fn compile_file_executes_labeled_for_of_current_loop_continue_closes_iterator() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("for-of-continue-current-loop.js");
-    let output = tempdir.path().join("for-of-continue-current-loop.wasm");
-
-    fs::write(
-        &input,
-        r#"
-        let sum = 0;
-        let closed = false;
-        const iterator = [1, 2, 3][Symbol.iterator]();
-
-        iterator.return = function () {
-          closed = true;
-          return { done: true };
-        };
-
-        outer: for (const value of iterator) {
-          if (value === 2) {
-            continue outer;
-          }
-          sum = sum + value;
-        }
-
-        console.log(sum, closed ? 1 : 0);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output: output.clone(),
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file(&input, &options).unwrap();
-
-    let run = Command::new("wasmtime").arg(&output).output().unwrap();
-    assert!(
-        run.status.success(),
-        "{}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "4 1\n");
-}
-
-#[test]
-fn compiles_module_goal_files_with_real_paths_fails_directly() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let input = tempdir.path().join("module.js");
-    let output = tempdir.path().join("module.wasm");
-    fs::write(
-        &input,
-        r#"
-        export const answer = 42;
-        console.log(answer);
-        "#,
-    )
-    .unwrap();
-    let options = CompileOptions {
-        output,
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file_with_goal(&input, &options, true)
-        .expect_err("module goals are not yet supported by direct wasm backend");
-}
-
-#[test]
-fn rejects_named_and_namespace_module_imports() {
-    let tempdir = tempfile::tempdir().unwrap();
-    let dep = tempdir.path().join("dep.js");
-    let reexport = tempdir.path().join("reexport.js");
-    let entry = tempdir.path().join("entry.js");
-    let output = tempdir.path().join("entry.wasm");
-
-    fs::write(
-        &dep,
-        r#"
-        export const value = 7;
-        export default function named() { return value; }
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        &reexport,
-        r#"
-        export * from "./dep.js";
-        "#,
-    )
-    .unwrap();
-    fs::write(
-        &entry,
-        r#"
-        import named, { value } from "./dep.js";
-        import * as ns from "./reexport.js";
-        console.log(named(), value, ns.value, ns[Symbol.toStringTag]);
-        "#,
-    )
-    .unwrap();
-
-    let options = CompileOptions {
-        output,
-        target: "wasm32-wasip2".to_string(),
-    };
-
-    compile_file_with_goal(&entry, &options, true)
-        .expect_err("module imports are not yet supported by direct wasm backend");
 }
 
 #[test]
@@ -757,9 +225,9 @@ fn emits_direct_wasm_bytes_for_typeof_unknown_string_comparison() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should constant-fold unsupported typeof comparison strings",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should constant-fold unsupported typeof comparison strings");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -867,9 +335,9 @@ fn emits_direct_wasm_bytes_for_typeof_function_declaration() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should classify top-level function declarations for typeof",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should classify top-level function declarations for typeof");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -992,35 +460,6 @@ fn emits_direct_wasm_bytes_for_update_expressions() {
 }
 
 #[test]
-fn parses_top_level_global_this_update_as_binding_update() {
-    let program = frontend::parse(
-        r#"
-        var y;
-        this.y++;
-        "#,
-    )
-    .unwrap();
-
-    assert!(
-        matches!(
-            program.statements.as_slice(),
-            [
-                Statement::Var { name, value },
-                Statement::Expression(Expression::Update {
-                    name: update_name,
-                    op: UpdateOp::Increment,
-                    prefix: false,
-                }),
-            ] if name == "y"
-                && matches!(value, Expression::Undefined)
-                && update_name == "y"
-        ),
-        "{:#?}",
-        program.statements
-    );
-}
-
-#[test]
 fn emits_direct_wasm_bytes_for_new_target_expression() {
     let program = frontend::parse(
         r#"
@@ -1109,9 +548,9 @@ fn emits_direct_wasm_bytes_for_member_expressions() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should support member expressions with conservative lowering",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should support member expressions with conservative lowering");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -1128,9 +567,9 @@ fn emits_direct_wasm_bytes_for_member_assignment_expressions() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should support member assignment expressions conservatively",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should support member assignment expressions conservatively");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -1147,9 +586,9 @@ fn emits_direct_wasm_bytes_for_member_assignment_statements() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should support member assignment statements conservatively",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should support member assignment statements conservatively");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -1537,9 +976,9 @@ fn emits_direct_wasm_bytes_for_new_expressions() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should support new expressions with conservative lowering",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should support new expressions with conservative lowering");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }
@@ -1582,9 +1021,9 @@ fn emits_direct_wasm_bytes_for_instanceof_operator() {
     )
     .unwrap();
 
-    let wasm = emit_wasm(&program).unwrap().expect(
-        "direct wasm backend should support instanceof operator with conservative value",
-    );
+    let wasm = emit_wasm(&program)
+        .unwrap()
+        .expect("direct wasm backend should support instanceof operator with conservative value");
 
     assert!(wasm.starts_with(b"\0asm\x01\0\0\0"));
 }

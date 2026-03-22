@@ -1,14 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::ir::hir::{
     ArrayElement, CallArgument, Expression, FunctionDeclaration, ObjectEntry, Program, Statement,
     SwitchCase,
 };
 
-include!("aot/lowering.rs");
-include!("aot/validation.rs");
+include!("lowering.rs");
+include!("validation.rs");
 
 pub fn validate_refined_aot(program: &Program) -> Result<()> {
     RefinedAotValidator::new(program).validate()

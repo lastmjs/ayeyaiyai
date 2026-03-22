@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use num_bigint::BigInt as StaticBigInt;
 
 use crate::{
-    frontend, CompileOptions,
+    CompileOptions, frontend,
     ir::hir::{
         ArrayElement, BinaryOp, CallArgument, Expression, FunctionDeclaration, FunctionKind,
         ObjectEntry, Program, Statement, UnaryOp, UpdateOp,
@@ -30,3 +30,7 @@ include!("api.rs");
 include!("compiler.rs");
 include!("analysis.rs");
 include!("function_compiler.rs");
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod smoke_tests;

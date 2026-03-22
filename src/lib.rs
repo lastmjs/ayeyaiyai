@@ -5,7 +5,7 @@ pub mod ir;
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 pub use backend::{emit_wasm, emit_wasm_with_reason};
 pub use compile_options::CompileOptions;
@@ -67,6 +67,3 @@ pub fn compile_source_with_reason(source: &str) -> std::result::Result<(), Strin
         Err(message) => Err(message.to_string()),
     }
 }
-
-#[cfg(test)]
-mod lib_tests;

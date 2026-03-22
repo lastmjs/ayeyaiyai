@@ -1853,7 +1853,6 @@ impl<'a> FunctionCompiler<'a> {
                 self.instructions.push(0x00);
                 Ok(())
             }
-            _ => Ok(()),
         }
     }
 
@@ -1993,6 +1992,8 @@ impl<'a> FunctionCompiler<'a> {
         labels: &[String],
         body: &[Statement],
     ) -> DirectResult<()> {
+        let invalidated_bindings =
+            collect_loop_assigned_binding_names(condition, break_hook, body, None, None);
         self.instructions.push(0x02);
         self.instructions.push(EMPTY_BLOCK_TYPE);
         let break_target = self.push_control_frame();
@@ -2023,6 +2024,7 @@ impl<'a> FunctionCompiler<'a> {
         self.pop_control_frame();
         self.instructions.push(0x0b);
         self.pop_control_frame();
+        self.invalidate_static_binding_metadata_for_names(&invalidated_bindings);
         Ok(())
     }
 
@@ -2162,6 +2164,32 @@ impl<'a> FunctionCompiler<'a> {
         result
     }
 
+    fn invalidate_static_binding_metadata_for_names(&mut self, names: &HashSet<String>) {
+        for name in names {
+            self.local_value_bindings.remove(name);
+            self.local_array_bindings.remove(name);
+            self.local_object_bindings.remove(name);
+            self.local_function_bindings.remove(name);
+            self.local_kinds.remove(name);
+            self.local_arguments_bindings.remove(name);
+            self.local_descriptor_bindings.remove(name);
+            self.local_proxy_bindings.remove(name);
+            self.local_prototype_object_bindings.remove(name);
+            self.local_specialized_function_values.remove(name);
+
+            self.module.global_value_bindings.remove(name);
+            self.module.global_array_bindings.remove(name);
+            self.module.global_object_bindings.remove(name);
+            self.module.global_function_bindings.remove(name);
+            self.module.global_kinds.remove(name);
+            self.module.global_arguments_bindings.remove(name);
+            self.module.global_proxy_bindings.remove(name);
+            self.module.global_prototype_object_bindings.remove(name);
+            self.module.global_property_descriptors.remove(name);
+            self.module.global_specialized_function_values.remove(name);
+        }
+    }
+
     fn emit_do_while(
         &mut self,
         condition: &Expression,
@@ -2169,6 +2197,8 @@ impl<'a> FunctionCompiler<'a> {
         labels: &[String],
         body: &[Statement],
     ) -> DirectResult<()> {
+        let invalidated_bindings =
+            collect_loop_assigned_binding_names(condition, break_hook, body, None, None);
         self.instructions.push(0x02);
         self.instructions.push(EMPTY_BLOCK_TYPE);
         let break_target = self.push_control_frame();
@@ -2206,6 +2236,7 @@ impl<'a> FunctionCompiler<'a> {
         self.pop_control_frame();
         self.instructions.push(0x0b);
         self.pop_control_frame();
+        self.invalidate_static_binding_metadata_for_names(&invalidated_bindings);
         Ok(())
     }
 
@@ -2219,6 +2250,8 @@ impl<'a> FunctionCompiler<'a> {
         break_hook: Option<&Expression>,
         body: &[Statement],
     ) -> DirectResult<()> {
+        let invalidated_bindings =
+            collect_loop_assigned_binding_names_from_for(init, condition, update, break_hook, body);
         self.with_active_eval_lexical_scope(per_iteration_bindings.to_vec(), |compiler| {
             compiler.emit_statements(init)?;
 
@@ -2266,6 +2299,7 @@ impl<'a> FunctionCompiler<'a> {
             compiler.pop_control_frame();
             compiler.instructions.push(0x0b);
             compiler.pop_control_frame();
+            compiler.invalidate_static_binding_metadata_for_names(&invalidated_bindings);
             Ok(())
         })
     }
@@ -3923,12 +3957,6 @@ impl<'a> FunctionCompiler<'a> {
         }
     }
 
-    fn direct_arguments_has_index_property(&self, index: u32) -> bool {
-        self.arguments_slots
-            .get(&index)
-            .is_some_and(|slot| slot.state.present)
-    }
-
     fn emit_update_arguments_slot_mapping(&mut self, slot: &ArgumentsSlot) {
         if let Some(mapped_local) = slot.mapped_local {
             self.push_i32_const(if slot.state.mapped { 1 } else { 0 });
@@ -5115,12 +5143,6 @@ impl<'a> FunctionCompiler<'a> {
                             self.push_i32_const(1);
                         }
                     }
-                    Ok(())
-                }
-                _ => {
-                    self.emit_numeric_expression(expression)?;
-                    self.instructions.push(0x1a);
-                    self.push_i32_const(JS_UNDEFINED_TAG);
                     Ok(())
                 }
             },
@@ -9822,27 +9844,6 @@ impl<'a> FunctionCompiler<'a> {
             .find(|function| function.name == function_name)
     }
 
-    fn expression_is_primitive_value(&self, expression: &Expression) -> bool {
-        let materialized = self.materialize_static_expression(expression);
-        match materialized {
-            Expression::Number(_)
-            | Expression::BigInt(_)
-            | Expression::String(_)
-            | Expression::Bool(_)
-            | Expression::Null
-            | Expression::Undefined => true,
-            Expression::Identifier(name) => {
-                (name == "undefined" || name == "NaN")
-                    && self.is_unshadowed_builtin_identifier(&name)
-            }
-            Expression::Unary {
-                op: UnaryOp::TypeOf,
-                ..
-            } => true,
-            _ => false,
-        }
-    }
-
     fn resolve_static_primitive_expression_with_context(
         &self,
         expression: &Expression,
@@ -10542,13 +10543,9 @@ impl<'a> FunctionCompiler<'a> {
             &resolved
         };
 
-        let prefers_string = match hint {
-            PrimitiveHint::String => true,
-            PrimitiveHint::Number => false,
-            PrimitiveHint::Default => self
-                .resolve_static_date_timestamp(coercion_target)
-                .is_some(),
-        };
+        let prefers_string =
+            matches!(hint, PrimitiveHint::Default)
+                && self.resolve_static_date_timestamp(coercion_target).is_some();
         let method_order = if prefers_string {
             ["toString", "valueOf"]
         } else {
@@ -10604,6 +10601,11 @@ impl<'a> FunctionCompiler<'a> {
         right: &Expression,
         current_function_name: Option<&str>,
     ) -> Option<StaticEvalOutcome> {
+        if self.addition_operand_requires_runtime_value(left)
+            || self.addition_operand_requires_runtime_value(right)
+        {
+            return None;
+        }
         let left_primitive = self.resolve_static_to_primitive_outcome_with_context(
             left,
             PrimitiveHint::Default,
@@ -11033,19 +11035,6 @@ impl<'a> FunctionCompiler<'a> {
         }
     }
 
-    fn ordinary_to_primitive_plan_requires_runtime_throw(
-        &self,
-        plan: &OrdinaryToPrimitivePlan,
-    ) -> bool {
-        plan.steps.iter().any(|step| match &step.outcome {
-            StaticEvalOutcome::Throw(_) => true,
-            StaticEvalOutcome::Value(value) => matches!(
-                self.static_expression_is_non_object_primitive(value),
-                Some(true)
-            ),
-        })
-    }
-
     fn analyze_ordinary_to_primitive_plan(
         &self,
         plan: &OrdinaryToPrimitivePlan,
@@ -11191,43 +11180,6 @@ impl<'a> FunctionCompiler<'a> {
         }
 
         Ok(true)
-    }
-
-    fn emit_binding_call_result_to_local(
-        &mut self,
-        binding: &LocalFunctionBinding,
-        arguments: &[Expression],
-        this_value: i32,
-        result_local: u32,
-    ) -> DirectResult<bool> {
-        let call_arguments = arguments
-            .iter()
-            .cloned()
-            .map(CallArgument::Expression)
-            .collect::<Vec<_>>();
-        match binding {
-            LocalFunctionBinding::User(function_name) => {
-                let Some(user_function) = self.module.user_function_map.get(function_name).cloned()
-                else {
-                    return Ok(false);
-                };
-                self.emit_user_function_call_with_new_target_and_this(
-                    &user_function,
-                    &call_arguments,
-                    JS_UNDEFINED_TAG,
-                    this_value,
-                )?;
-                self.push_local_set(result_local);
-                Ok(true)
-            }
-            LocalFunctionBinding::Builtin(function_name) => {
-                if !self.emit_builtin_call(function_name, &call_arguments)? {
-                    return Ok(false);
-                }
-                self.push_local_set(result_local);
-                Ok(true)
-            }
-        }
     }
 
     fn emit_binding_call_result_to_local_with_explicit_this(
@@ -14520,22 +14472,6 @@ impl<'a> FunctionCompiler<'a> {
         None
     }
 
-    fn resolve_copy_data_properties_binding(
-        &self,
-        expression: &Expression,
-    ) -> Option<ObjectValueBinding> {
-        let mut value_bindings = self.module.global_value_bindings.clone();
-        value_bindings.extend(self.local_value_bindings.clone());
-        let mut object_bindings = self.module.global_object_bindings.clone();
-        object_bindings.extend(self.local_object_bindings.clone());
-        self.resolve_copy_data_properties_binding_with_state(
-            expression,
-            &mut HashMap::new(),
-            &mut value_bindings,
-            &mut object_bindings,
-        )
-    }
-
     fn resolve_object_binding_entries_with_state(
         &self,
         entries: &[ObjectEntry],
@@ -14687,7 +14623,7 @@ impl<'a> FunctionCompiler<'a> {
     fn execute_function_binding_with_state(
         &self,
         binding: &LocalFunctionBinding,
-        local_bindings: &mut HashMap<String, Expression>,
+        _local_bindings: &mut HashMap<String, Expression>,
         value_bindings: &mut HashMap<String, Expression>,
         object_bindings: &mut HashMap<String, ObjectValueBinding>,
     ) -> Option<Expression> {
@@ -15792,18 +15728,6 @@ impl<'a> FunctionCompiler<'a> {
             next_index += 1;
         }
         next_index
-    }
-
-    fn sync_runtime_array_length_local_with_stack_value(&mut self, name: &str, value: &Expression) {
-        let Some(array_binding) = self.resolve_array_binding_from_expression(value) else {
-            return;
-        };
-        let value_local = self.allocate_temp_local();
-        self.push_local_set(value_local);
-        let length_local = self.ensure_runtime_array_length_local(name);
-        self.push_i32_const(array_binding.values.len() as i32);
-        self.push_local_set(length_local);
-        self.push_local_get(value_local);
     }
 
     fn resolve_iterator_source_kind(&self, expression: &Expression) -> Option<IteratorSourceKind> {
@@ -20272,6 +20196,49 @@ fn collect_direct_eval_lexical_binding_names(statements: &[Statement]) -> Vec<St
     bindings
 }
 
+fn collect_loop_assigned_binding_names(
+    condition: &Expression,
+    break_hook: Option<&Expression>,
+    body: &[Statement],
+    init: Option<&[Statement]>,
+    update: Option<&Expression>,
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if let Some(init) = init {
+        for statement in init {
+            collect_assigned_binding_names_from_statement(statement, &mut names);
+        }
+    }
+    collect_assigned_binding_names_from_expression(condition, &mut names);
+    if let Some(update) = update {
+        collect_assigned_binding_names_from_expression(update, &mut names);
+    }
+    if let Some(break_hook) = break_hook {
+        collect_assigned_binding_names_from_expression(break_hook, &mut names);
+    }
+    for statement in body {
+        collect_assigned_binding_names_from_statement(statement, &mut names);
+    }
+    names
+}
+
+fn collect_loop_assigned_binding_names_from_for(
+    init: &[Statement],
+    condition: Option<&Expression>,
+    update: Option<&Expression>,
+    break_hook: Option<&Expression>,
+    body: &[Statement],
+) -> HashSet<String> {
+    let fallback_condition = Expression::Bool(true);
+    collect_loop_assigned_binding_names(
+        condition.unwrap_or(&fallback_condition),
+        break_hook,
+        body,
+        Some(init),
+        update,
+    )
+}
+
 fn collect_eval_statement_var_names(statements: &[Statement]) -> HashSet<String> {
     let mut names = HashSet::new();
     collect_eval_var_names_from_statements(statements, &mut names);
@@ -20284,6 +20251,252 @@ fn collect_referenced_binding_names_from_statements(statements: &[Statement]) ->
         collect_referenced_binding_names_from_statement(statement, &mut names);
     }
     names
+}
+
+fn collect_assigned_binding_names_from_statement(statement: &Statement, names: &mut HashSet<String>) {
+    match statement {
+        Statement::Block { body } | Statement::Labeled { body, .. } => {
+            for statement in body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::Var { name, value } | Statement::Let { name, value, .. } => {
+            names.insert(name.clone());
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Statement::Assign { name, value } => {
+            names.insert(name.clone());
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Statement::AssignMember {
+            object,
+            property,
+            value,
+        } => {
+            collect_assigned_binding_names_from_expression(object, names);
+            collect_assigned_binding_names_from_expression(property, names);
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Statement::Expression(expression)
+        | Statement::Throw(expression)
+        | Statement::Return(expression)
+        | Statement::Yield { value: expression }
+        | Statement::YieldDelegate { value: expression } => {
+            collect_assigned_binding_names_from_expression(expression, names);
+        }
+        Statement::Print { values } => {
+            for value in values {
+                collect_assigned_binding_names_from_expression(value, names);
+            }
+        }
+        Statement::With { object, body } => {
+            collect_assigned_binding_names_from_expression(object, names);
+            for statement in body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_assigned_binding_names_from_expression(condition, names);
+            for statement in then_branch {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+            for statement in else_branch {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::Try {
+            body,
+            catch_setup,
+            catch_body,
+            ..
+        } => {
+            for statement in body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+            for statement in catch_setup {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+            for statement in catch_body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::Switch {
+            discriminant,
+            cases,
+            ..
+        } => {
+            collect_assigned_binding_names_from_expression(discriminant, names);
+            for case in cases {
+                if let Some(test) = &case.test {
+                    collect_assigned_binding_names_from_expression(test, names);
+                }
+                for statement in &case.body {
+                    collect_assigned_binding_names_from_statement(statement, names);
+                }
+            }
+        }
+        Statement::For {
+            init,
+            condition,
+            update,
+            break_hook,
+            body,
+            ..
+        } => {
+            for statement in init {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+            if let Some(condition) = condition {
+                collect_assigned_binding_names_from_expression(condition, names);
+            }
+            if let Some(update) = update {
+                collect_assigned_binding_names_from_expression(update, names);
+            }
+            if let Some(break_hook) = break_hook {
+                collect_assigned_binding_names_from_expression(break_hook, names);
+            }
+            for statement in body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::While {
+            condition,
+            break_hook,
+            body,
+            ..
+        }
+        | Statement::DoWhile {
+            condition,
+            break_hook,
+            body,
+            ..
+        } => {
+            collect_assigned_binding_names_from_expression(condition, names);
+            if let Some(break_hook) = break_hook {
+                collect_assigned_binding_names_from_expression(break_hook, names);
+            }
+            for statement in body {
+                collect_assigned_binding_names_from_statement(statement, names);
+            }
+        }
+        Statement::Break { .. } | Statement::Continue { .. } => {}
+    }
+}
+
+fn collect_assigned_binding_names_from_expression(
+    expression: &Expression,
+    names: &mut HashSet<String>,
+) {
+    match expression {
+        Expression::Identifier(_)
+        | Expression::Number(_)
+        | Expression::BigInt(_)
+        | Expression::String(_)
+        | Expression::Bool(_)
+        | Expression::Null
+        | Expression::Undefined
+        | Expression::This
+        | Expression::NewTarget
+        | Expression::Sent => {}
+        Expression::Update { name, .. } => {
+            names.insert(name.clone());
+        }
+        Expression::Member { object, property } => {
+            collect_assigned_binding_names_from_expression(object, names);
+            collect_assigned_binding_names_from_expression(property, names);
+        }
+        Expression::SuperMember { property } => {
+            collect_assigned_binding_names_from_expression(property, names);
+        }
+        Expression::Assign { name, value } => {
+            names.insert(name.clone());
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Expression::AssignMember {
+            object,
+            property,
+            value,
+        } => {
+            collect_assigned_binding_names_from_expression(object, names);
+            collect_assigned_binding_names_from_expression(property, names);
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Expression::AssignSuperMember { property, value } => {
+            collect_assigned_binding_names_from_expression(property, names);
+            collect_assigned_binding_names_from_expression(value, names);
+        }
+        Expression::Await(value)
+        | Expression::EnumerateKeys(value)
+        | Expression::GetIterator(value)
+        | Expression::IteratorClose(value)
+        | Expression::Unary {
+            expression: value, ..
+        } => collect_assigned_binding_names_from_expression(value, names),
+        Expression::Binary { left, right, .. } => {
+            collect_assigned_binding_names_from_expression(left, names);
+            collect_assigned_binding_names_from_expression(right, names);
+        }
+        Expression::Conditional {
+            condition,
+            then_expression,
+            else_expression,
+        } => {
+            collect_assigned_binding_names_from_expression(condition, names);
+            collect_assigned_binding_names_from_expression(then_expression, names);
+            collect_assigned_binding_names_from_expression(else_expression, names);
+        }
+        Expression::Sequence(expressions) => {
+            for expression in expressions {
+                collect_assigned_binding_names_from_expression(expression, names);
+            }
+        }
+        Expression::Call { callee, arguments }
+        | Expression::SuperCall { callee, arguments }
+        | Expression::New { callee, arguments } => {
+            collect_assigned_binding_names_from_expression(callee, names);
+            for argument in arguments {
+                match argument {
+                    CallArgument::Expression(expression) | CallArgument::Spread(expression) => {
+                        collect_assigned_binding_names_from_expression(expression, names);
+                    }
+                }
+            }
+        }
+        Expression::Array(elements) => {
+            for element in elements {
+                match element {
+                    ArrayElement::Expression(expression) | ArrayElement::Spread(expression) => {
+                        collect_assigned_binding_names_from_expression(expression, names);
+                    }
+                }
+            }
+        }
+        Expression::Object(entries) => {
+            for entry in entries {
+                match entry {
+                    ObjectEntry::Data { key, value } => {
+                        collect_assigned_binding_names_from_expression(key, names);
+                        collect_assigned_binding_names_from_expression(value, names);
+                    }
+                    ObjectEntry::Getter { key, getter } => {
+                        collect_assigned_binding_names_from_expression(key, names);
+                        collect_assigned_binding_names_from_expression(getter, names);
+                    }
+                    ObjectEntry::Setter { key, setter } => {
+                        collect_assigned_binding_names_from_expression(key, names);
+                        collect_assigned_binding_names_from_expression(setter, names);
+                    }
+                    ObjectEntry::Spread(expression) => {
+                        collect_assigned_binding_names_from_expression(expression, names);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn collect_referenced_binding_names_from_statement(

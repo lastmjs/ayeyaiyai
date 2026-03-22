@@ -5,19 +5,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, ensure, Context, Result};
-use swc_common::{source_map::SmallPos, sync::Lrc, FileName, SourceMap, Span};
+use anyhow::{Context, Result, bail, ensure};
+use swc_common::{FileName, SourceMap, Span, source_map::SmallPos, sync::Lrc};
 use swc_ecma_ast::{
     ArrowExpr, AssignOp, AssignTarget, BinaryOp as SwcBinaryOp, BindingIdent, BlockStmt,
     BlockStmtOrExpr, BreakStmt, Callee, Class, ClassDecl, ClassMember, ClassMethod, Constructor,
     ContinueStmt, Decl, DefaultDecl, ExportDefaultDecl, ExportSpecifier, Expr, ExprStmt, FnDecl,
-    FnExpr, ForHead, ForInStmt, ForOfStmt, Function, ImportDecl, ImportSpecifier, LabeledStmt,
-    Lit, MemberProp, MetaPropKind, MethodKind, Module, ModuleDecl, ModuleExportName, ModuleItem,
+    FnExpr, ForHead, ForInStmt, ForOfStmt, Function, ImportDecl, ImportSpecifier, LabeledStmt, Lit,
+    MemberProp, MetaPropKind, MethodKind, Module, ModuleDecl, ModuleExportName, ModuleItem,
     ObjectLit, ObjectPatProp, ParamOrTsParamProp, Pat, Program as SwcProgram, Prop, PropName,
     PropOrSpread, SimpleAssignTarget, Stmt, SuperProp, SuperPropExpr, SwitchStmt,
     UnaryOp as SwcUnaryOp, UpdateOp as SwcUpdateOp, VarDeclKind, VarDeclOrExpr, WithStmt,
 };
-use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax};
+use swc_ecma_parser::{Parser, StringInput, Syntax, lexer::Lexer};
 
 use crate::ir::hir::{
     ArrayElement, BinaryOp, CallArgument, Expression, FunctionDeclaration, FunctionKind,
@@ -43,4 +43,4 @@ include!("bundle.rs");
 include!("lowering.rs");
 
 #[cfg(test)]
-mod tests;
+mod parse_tests;

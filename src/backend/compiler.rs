@@ -1012,19 +1012,6 @@ impl DirectWasmCompiler {
         }
     }
 
-    fn infer_global_copy_data_properties_binding(
-        &self,
-        expression: &Expression,
-    ) -> Option<ObjectValueBinding> {
-        let mut value_bindings = self.global_value_bindings.clone();
-        let mut object_bindings = self.global_object_bindings.clone();
-        self.infer_global_copy_data_properties_binding_with_state(
-            expression,
-            &mut value_bindings,
-            &mut object_bindings,
-        )
-    }
-
     fn infer_global_copy_data_properties_binding_with_state(
         &self,
         expression: &Expression,
@@ -1086,16 +1073,15 @@ impl DirectWasmCompiler {
         Some(copied_binding)
     }
 
-    fn infer_global_member_getter_return_value(
+    #[cfg(test)]
+    fn infer_global_copy_data_properties_binding(
         &self,
-        object: &Expression,
-        property: &Expression,
-    ) -> Option<Expression> {
+        expression: &Expression,
+    ) -> Option<ObjectValueBinding> {
         let mut value_bindings = self.global_value_bindings.clone();
         let mut object_bindings = self.global_object_bindings.clone();
-        self.infer_global_member_getter_return_value_with_state(
-            object,
-            property,
+        self.infer_global_copy_data_properties_binding_with_state(
+            expression,
             &mut value_bindings,
             &mut object_bindings,
         )
@@ -1114,6 +1100,22 @@ impl DirectWasmCompiler {
             &[],
             value_bindings,
             object_bindings,
+        )
+    }
+
+    #[cfg(test)]
+    fn infer_global_member_getter_return_value(
+        &self,
+        object: &Expression,
+        property: &Expression,
+    ) -> Option<Expression> {
+        let mut value_bindings = self.global_value_bindings.clone();
+        let mut object_bindings = self.global_object_bindings.clone();
+        self.infer_global_member_getter_return_value_with_state(
+            object,
+            property,
+            &mut value_bindings,
+            &mut object_bindings,
         )
     }
 
@@ -1146,43 +1148,6 @@ impl DirectWasmCompiler {
         };
         let key = MemberFunctionBindingKey { target, property };
         self.global_member_getter_bindings.get(&key).cloned()
-    }
-
-    fn infer_global_function_binding_static_return_expression(
-        &self,
-        binding: &LocalFunctionBinding,
-        arguments: &[CallArgument],
-    ) -> Option<Expression> {
-        let LocalFunctionBinding::User(function_name) = binding else {
-            return None;
-        };
-        let user_function = self.user_function_map.get(function_name)?;
-        if let Some(summary) = user_function.inline_summary.as_ref()
-            && summary.effects.is_empty()
-            && let Some(return_value) = summary.return_value.as_ref()
-        {
-            return Some(self.materialize_global_expression(
-                &self.substitute_global_user_function_argument_bindings(
-                    return_value,
-                    user_function,
-                    arguments,
-                ),
-            ));
-        }
-        let function = self
-            .registered_function_declarations
-            .iter()
-            .find(|function| function.name == *function_name)?;
-        let [Statement::Return(expression)] = function.body.as_slice() else {
-            return None;
-        };
-        Some(self.materialize_global_expression(
-            &self.substitute_global_user_function_argument_bindings(
-                expression,
-                user_function,
-                arguments,
-            ),
-        ))
     }
 
     fn infer_global_member_function_binding_property(
@@ -5583,13 +5548,6 @@ impl DirectWasmCompiler {
         }
     }
 
-    fn resolve_function_binding_from_expression(
-        &self,
-        expression: &Expression,
-    ) -> Option<LocalFunctionBinding> {
-        self.resolve_function_binding_from_expression_with_aliases(expression, &HashMap::new())
-    }
-
     fn resolve_function_binding_from_expression_with_aliases(
         &self,
         expression: &Expression,
@@ -5619,4 +5577,3 @@ impl DirectWasmCompiler {
         }
     }
 }
-
