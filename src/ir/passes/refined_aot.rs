@@ -6,7 +6,14 @@ use crate::ir::hir::{
     ArrayElement, CallArgument, Expression, FunctionDeclaration, ObjectEntry, Program, Statement,
 };
 
-use super::support::{collect_statement_bindings, function_constructor_literal_source_parts};
+use super::{
+    scope_stack::ScopeStack,
+    support::{collect_statement_bindings, function_constructor_literal_source_parts},
+};
+
+mod eval_rules;
+#[cfg(test)]
+mod tests;
 
 pub fn validate(program: &Program) -> Result<()> {
     RefinedAotValidator::new(program).validate()
@@ -16,7 +23,7 @@ struct RefinedAotValidator<'a> {
     program: &'a Program,
     functions: HashMap<&'a str, &'a FunctionDeclaration>,
     validated_functions: HashSet<&'a str>,
-    scopes: Vec<HashSet<String>>,
+    scopes: ScopeStack,
     known_kinds: Vec<HashMap<String, KnownValueKind>>,
 }
 
@@ -37,7 +44,7 @@ impl<'a> RefinedAotValidator<'a> {
                 .map(|function| (function.name.as_str(), function))
                 .collect(),
             validated_functions: HashSet::new(),
-            scopes: Vec::new(),
+            scopes: ScopeStack::default(),
             known_kinds: Vec::new(),
         }
     }
@@ -455,10 +462,6 @@ impl<'a> RefinedAotValidator<'a> {
         Ok(())
     }
 
-    fn is_bound(&self, name: &str) -> bool {
-        self.scopes.iter().rev().any(|scope| scope.contains(name))
-    }
-
     fn record_known_kind(&mut self, name: &str, kind: KnownValueKind) {
         if let Some(scope) = self.known_kinds.last_mut() {
             scope.insert(name.to_string(), kind);
@@ -513,244 +516,5 @@ impl<'a> RefinedAotValidator<'a> {
             | Expression::AssignSuperMember { value, .. } => self.infer_known_kind(value),
             _ => KnownValueKind::Unknown,
         }
-    }
-
-    fn is_global_identifier(&self, expression: &Expression, name: &str) -> bool {
-        matches!(expression, Expression::Identifier(identifier) if identifier == name && !self.is_bound(identifier))
-    }
-
-    fn is_string_literal(&self, expression: &Expression, value: &str) -> bool {
-        matches!(expression, Expression::String(string) if string == value)
-    }
-
-    fn is_function_constructor_callee(&self, callee: &Expression) -> bool {
-        self.is_global_identifier(callee, "Function")
-            || matches!(
-                callee,
-                Expression::Member { object, property }
-                    if self.is_global_identifier(object, "globalThis")
-                        && self.is_string_literal(property, "Function")
-            )
-    }
-
-    fn is_direct_literal_eval_call(&self, callee: &Expression, arguments: &[CallArgument]) -> bool {
-        if !self.is_global_identifier(callee, "eval") {
-            return false;
-        }
-
-        match arguments.first() {
-            None => true,
-            Some(CallArgument::Expression(Expression::String(_))) => true,
-            _ => false,
-        }
-    }
-
-    fn is_direct_non_string_eval_call(
-        &self,
-        callee: &Expression,
-        arguments: &[CallArgument],
-    ) -> bool {
-        if !self.is_global_identifier(callee, "eval") {
-            return false;
-        }
-
-        match arguments.first() {
-            Some(CallArgument::Expression(argument)) => {
-                self.infer_known_kind(argument) == KnownValueKind::NonString
-            }
-            _ => false,
-        }
-    }
-
-    fn is_direct_comment_eval_call(&self, callee: &Expression, arguments: &[CallArgument]) -> bool {
-        if !self.is_global_identifier(callee, "eval") {
-            return false;
-        }
-
-        let Some(CallArgument::Expression(argument)) = arguments.first() else {
-            return false;
-        };
-
-        let mut fragments = Vec::new();
-        if !self.collect_string_concat_fragments(argument, &mut fragments) {
-            return false;
-        }
-
-        matches!(
-            fragments.as_slice(),
-            [
-                EvalStringFragment::Static(prefix),
-                EvalStringFragment::Dynamic,
-                EvalStringFragment::Static(suffix),
-            ] if (prefix == "//var " && suffix == "yy = -1")
-                || (prefix == "/*var " && suffix == "xx = 1*/")
-        )
-    }
-
-    fn collect_string_concat_fragments(
-        &self,
-        expression: &Expression,
-        fragments: &mut Vec<EvalStringFragment>,
-    ) -> bool {
-        if let Expression::Binary {
-            op: crate::ir::hir::BinaryOp::Add,
-            left,
-            right,
-        } = expression
-        {
-            return self.collect_string_concat_fragments(left, fragments)
-                && self.collect_string_concat_fragments(right, fragments);
-        }
-
-        match expression {
-            Expression::String(text) => {
-                if let Some(EvalStringFragment::Static(existing)) = fragments.last_mut() {
-                    existing.push_str(text);
-                } else {
-                    fragments.push(EvalStringFragment::Static(text.clone()));
-                }
-            }
-            _ => fragments.push(EvalStringFragment::Dynamic),
-        }
-
-        true
-    }
-
-    fn is_reflect_construct_function(
-        &self,
-        callee: &Expression,
-        arguments: &[CallArgument],
-    ) -> bool {
-        let Some(first_argument) = arguments.first() else {
-            return false;
-        };
-        let CallArgument::Expression(first_argument) = first_argument else {
-            return false;
-        };
-
-        let targets_function = self.is_global_identifier(first_argument, "Function")
-            || matches!(
-                first_argument,
-                Expression::Member { object, property }
-                    if self.is_global_identifier(object, "globalThis")
-                        && self.is_string_literal(property, "Function")
-            );
-
-        targets_function
-            && matches!(
-                callee,
-                Expression::Member { object, property }
-                    if self.is_global_identifier(object, "Reflect")
-                        && self.is_string_literal(property, "construct")
-            )
-    }
-}
-
-enum EvalStringFragment {
-    Static(String),
-    Dynamic,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate;
-    use crate::frontend;
-
-    #[test]
-    fn rejects_builtin_eval() {
-        let program = frontend::parse("eval('1');").unwrap();
-        validate(&program).unwrap();
-    }
-
-    #[test]
-    fn rejects_non_literal_direct_eval() {
-        let program = frontend::parse(
-            r#"
-            let source = "1";
-            eval(source);
-            "#,
-        )
-        .unwrap();
-
-        let error = validate(&program).unwrap_err();
-        assert!(error.to_string().contains("compile-time string literal"));
-    }
-
-    #[test]
-    fn allows_direct_eval_comment_patterns() {
-        let program = frontend::parse(
-            r#"
-            var xx = String.fromCharCode(0x000A);
-            eval("//var " + xx + "yy = -1");
-            eval("/*var " + String.fromCharCode(0x0000) + "xx = 1*/");
-            "#,
-        )
-        .unwrap();
-
-        validate(&program).unwrap();
-    }
-
-    #[test]
-    fn allows_static_function_constructor_literal_sources() {
-        let program = frontend::parse("new Function('value', 'return value + 1;');").unwrap();
-        validate(&program).unwrap();
-    }
-
-    #[test]
-    fn rejects_dynamic_function_constructor() {
-        let program = frontend::parse(
-            r#"
-            let body = "return 1;";
-            new Function(body);
-            "#,
-        )
-        .unwrap();
-        let error = validate(&program).unwrap_err();
-        assert!(error.to_string().contains("runtime source evaluation"));
-    }
-
-    #[test]
-    fn rejects_realm_eval() {
-        let program = frontend::parse("Realm.eval('1');").unwrap();
-        let error = validate(&program).unwrap_err();
-        assert!(error.to_string().contains("runtime source evaluation"));
-    }
-
-    #[test]
-    fn allows_shadowed_eval_binding() {
-        let program = frontend::parse(
-            r#"
-            function eval(value) {
-              return value;
-            }
-
-            console.log(eval(1));
-            "#,
-        )
-        .unwrap();
-
-        validate(&program).unwrap();
-    }
-
-    #[test]
-    fn allows_outer_scope_eval_shadowing_for_nested_functions() {
-        let program = frontend::parse(
-            r#"
-            function outer() {
-              let eval = 1;
-
-              function inner() {
-                return eval;
-              }
-
-              return inner();
-            }
-
-            console.log(outer());
-            "#,
-        )
-        .unwrap();
-
-        validate(&program).unwrap();
     }
 }

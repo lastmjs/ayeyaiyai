@@ -175,11 +175,7 @@ impl Lowerer {
             params,
             body,
             register_global: false,
-            kind: if arrow_expression.is_async {
-                FunctionKind::Async
-            } else {
-                FunctionKind::Ordinary
-            },
+            kind: FunctionKind::from_flags(false, arrow_expression.is_async),
             self_binding: None,
             mapped_arguments: false,
             strict: self.arrow_strict_mode(arrow_expression),

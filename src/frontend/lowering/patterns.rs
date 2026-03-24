@@ -96,6 +96,32 @@ impl Lowerer {
                     mutable: true,
                     value,
                 });
+                let default_value = self.lower_expression_with_name_hint(
+                    &assign.right,
+                    pattern_name_hint(&assign.left),
+                )?;
+                if let Pat::Ident(ident) = assign.left.as_ref() {
+                    let name = ident.id.sym.to_string();
+                    let value = Expression::Conditional {
+                        condition: Box::new(Expression::Binary {
+                            op: BinaryOp::NotEqual,
+                            left: Box::new(Expression::Identifier(temporary_name.clone())),
+                            right: Box::new(Expression::Undefined),
+                        }),
+                        then_expression: Box::new(Expression::Identifier(temporary_name.clone())),
+                        else_expression: Box::new(default_value),
+                    };
+                    statements.push(match binding_kind {
+                        ForOfPatternBindingKind::Var => Statement::Var { name, value },
+                        ForOfPatternBindingKind::Assignment => Statement::Assign { name, value },
+                        ForOfPatternBindingKind::Lexical { mutable } => Statement::Let {
+                            name,
+                            mutable,
+                            value,
+                        },
+                    });
+                    return Ok(());
+                }
                 let mut then_branch = Vec::new();
                 self.lower_for_of_pattern_binding(
                     &assign.left,
@@ -104,10 +130,6 @@ impl Lowerer {
                     &mut then_branch,
                 )?;
                 let mut else_branch = Vec::new();
-                let default_value = self.lower_expression_with_name_hint(
-                    &assign.right,
-                    pattern_name_hint(&assign.left),
-                )?;
                 self.lower_for_of_pattern_binding(
                     &assign.left,
                     default_value,

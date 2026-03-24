@@ -258,6 +258,79 @@ fn compiles_nested_for_of_continue_outer_loop_closes_inner_only() {
 }
 
 #[test]
+fn compiles_for_of_over_custom_iterator_breaks_and_closes() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("for-of-custom-iterator-break-close.js");
+    let output = tempdir
+        .path()
+        .join("for-of-custom-iterator-break-close.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let closed = 0;
+
+        function makeIterable(values) {
+          let index = 0;
+          const iterator = {
+            next: function () {
+              if (index >= values.length) {
+                return { done: true };
+              }
+              return { value: values[index++], done: false };
+            },
+            return: function () {
+              closed = closed + 1;
+              return { done: true };
+            },
+          };
+
+          iterator[Symbol.iterator] = function () {
+            return iterator;
+          };
+
+          return iterator;
+        }
+
+        let count = 0;
+        for (const value of makeIterable([4, 5])) {
+          count = count + 1;
+          if (value === 5) {
+            break;
+          }
+        }
+
+        console.log(count, closed);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "2 1\n");
+}
+
+#[test]
 fn compiles_nested_for_of_labeled_break_outer_loop() {
     let tempdir = tempdir().unwrap();
     let input = tempdir.path().join("nested-for-of-labeled-break.js");
@@ -11498,6 +11571,53 @@ fn custom_constructor_instances_keep_constructor_identity() {
         function DummyError() {}
         let error = new DummyError();
         console.log(error.constructor === DummyError);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "true\n");
+}
+
+#[test]
+fn thrown_custom_constructor_instances_keep_constructor_identity() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("thrown-custom-constructor.js");
+    let output = tempdir.path().join("thrown-custom-constructor.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function DummyError() {}
+        function thrower() {
+          throw new DummyError();
+        }
+        try {
+          thrower();
+        } catch (error) {
+          console.log(error.constructor === DummyError);
+        }
         "#,
     )
     .unwrap();

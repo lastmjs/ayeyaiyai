@@ -123,68 +123,95 @@ impl<'a> FunctionCompiler<'a> {
                 next_local_index += 1;
             }
         }
+        if let Some(user_function) = user_function
+            && let Some(function) = module
+                .registered_function_declarations
+                .iter()
+                .find(|function| function.name == user_function.name)
+            && let Some(binding_name) = function
+                .self_binding
+                .as_ref()
+                .or(function.top_level_binding.as_ref())
+        {
+            local_function_bindings.insert(
+                binding_name.clone(),
+                LocalFunctionBinding::User(user_function.name.clone()),
+            );
+            local_value_bindings.insert(
+                binding_name.clone(),
+                Expression::Identifier(user_function.name.clone()),
+            );
+            local_kinds.insert(binding_name.clone(), StaticValueKind::Function);
+        }
 
         Ok(Self {
             module,
-            parameter_names: params.to_vec(),
-            parameter_defaults,
-            parameter_initialized_locals,
-            parameter_scope_arguments_local,
-            in_parameter_default_initialization: false,
-            locals,
-            local_kinds,
-            local_value_bindings,
-            local_function_bindings,
-            local_specialized_function_values: HashMap::new(),
-            local_proxy_bindings: HashMap::new(),
-            member_function_bindings: HashMap::new(),
-            member_getter_bindings: HashMap::new(),
-            member_setter_bindings: HashMap::new(),
-            local_array_bindings,
-            local_resizable_array_buffer_bindings: HashMap::new(),
-            local_typed_array_view_bindings: HashMap::new(),
-            runtime_typed_array_oob_locals: HashMap::new(),
-            tracked_array_function_values: HashMap::new(),
-            runtime_array_slots: HashMap::new(),
-            local_array_iterator_bindings: HashMap::new(),
-            local_iterator_step_bindings: HashMap::new(),
-            runtime_array_length_locals: HashMap::new(),
-            materializing_expression_keys: RefCell::new(HashSet::new()),
-            local_object_bindings,
-            local_prototype_object_bindings: HashMap::new(),
-            local_arguments_bindings: HashMap::new(),
-            direct_arguments_aliases: HashSet::new(),
-            local_descriptor_bindings: HashMap::new(),
-            eval_lexical_initialized_locals: HashMap::new(),
-            throw_tag_local,
-            throw_value_local,
-            strict_mode,
-            next_local_index,
-            param_count: total_param_count,
-            visible_param_count,
-            actual_argument_count_local,
-            extra_argument_param_locals,
-            arguments_slots: HashMap::new(),
-            mapped_arguments,
-            current_user_function_name: user_function.map(|function| function.name.clone()),
-            current_arguments_callee_present: user_function
-                .is_some_and(|function| !function.lexical_this),
-            current_arguments_callee_override: None,
-            current_arguments_length_present: user_function
-                .is_some_and(|function| !function.lexical_this),
-            current_arguments_length_override: None,
-            instructions: Vec::new(),
-            control_stack: Vec::new(),
-            loop_stack: Vec::new(),
-            break_stack: Vec::new(),
-            active_eval_lexical_scopes: Vec::new(),
-            active_eval_lexical_binding_counts: HashMap::new(),
-            active_scoped_lexical_bindings: HashMap::new(),
-            with_scopes: Vec::new(),
-            try_stack: Vec::new(),
-            allow_return,
-            top_level_function: user_function.is_none(),
-            isolated_indirect_eval: false,
+            state: FunctionCompilerState {
+                parameter_names: params.to_vec(),
+                parameter_defaults,
+                parameter_initialized_locals,
+                parameter_scope_arguments_local,
+                in_parameter_default_initialization: false,
+                locals,
+                local_kinds,
+                local_value_bindings,
+                local_function_bindings,
+                local_specialized_function_values: HashMap::new(),
+                local_proxy_bindings: HashMap::new(),
+                member_function_bindings: HashMap::new(),
+                member_function_capture_slots: HashMap::new(),
+                member_getter_bindings: HashMap::new(),
+                member_setter_bindings: HashMap::new(),
+                local_array_bindings,
+                local_resizable_array_buffer_bindings: HashMap::new(),
+                local_typed_array_view_bindings: HashMap::new(),
+                runtime_typed_array_oob_locals: HashMap::new(),
+                tracked_array_function_values: HashMap::new(),
+                runtime_array_slots: HashMap::new(),
+                local_array_iterator_bindings: HashMap::new(),
+                local_iterator_step_bindings: HashMap::new(),
+                runtime_array_length_locals: HashMap::new(),
+                materializing_expression_keys: RefCell::new(HashSet::new()),
+                local_object_bindings,
+                local_prototype_object_bindings: HashMap::new(),
+                local_arguments_bindings: HashMap::new(),
+                direct_arguments_aliases: HashSet::new(),
+                local_descriptor_bindings: HashMap::new(),
+                eval_lexical_initialized_locals: HashMap::new(),
+                throw_tag_local,
+                throw_value_local,
+                strict_mode,
+                next_local_index,
+                param_count: total_param_count,
+                visible_param_count,
+                actual_argument_count_local,
+                extra_argument_param_locals,
+                arguments_slots: HashMap::new(),
+                mapped_arguments,
+                current_user_function_name: user_function.map(|function| function.name.clone()),
+                current_arguments_callee_present: user_function
+                    .is_some_and(|function| !function.lexical_this),
+                current_arguments_callee_override: None,
+                current_arguments_length_present: user_function
+                    .is_some_and(|function| !function.lexical_this),
+                current_arguments_length_override: None,
+                capture_slot_source_bindings: HashMap::new(),
+                deleted_builtin_identifiers: HashSet::new(),
+                runtime_dynamic_bindings: HashSet::new(),
+                last_bound_user_function_call: None,
+                instructions: Vec::new(),
+                control_stack: Vec::new(),
+                loop_stack: Vec::new(),
+                break_stack: Vec::new(),
+                active_eval_lexical_scopes: Vec::new(),
+                active_eval_lexical_binding_counts: HashMap::new(),
+                active_scoped_lexical_bindings: HashMap::new(),
+                with_scopes: Vec::new(),
+                try_stack: Vec::new(),
+                allow_return,
+                top_level_function: user_function.is_none(),
+                isolated_indirect_eval: false,
+            },
         })
     }
 
@@ -200,6 +227,19 @@ impl<'a> FunctionCompiler<'a> {
         if let Some(parameter_scope_arguments_local) = self.parameter_scope_arguments_local {
             self.push_i32_const(JS_UNDEFINED_TAG);
             self.push_local_set(parameter_scope_arguments_local);
+        }
+        if let Some(current_function_name) = self.current_user_function_name.clone()
+            && let Some(function) =
+                self.resolve_registered_function_declaration(&current_function_name)
+            && let Some(binding_name) = function
+                .self_binding
+                .as_ref()
+                .or(function.top_level_binding.as_ref())
+            && let Some(local_index) = self.locals.get(binding_name).copied()
+            && let Some(user_function) = self.module.user_function_map.get(&current_function_name)
+        {
+            self.push_i32_const(user_function_runtime_value(user_function));
+            self.push_local_set(local_index);
         }
         let parameter_initialized_locals = self
             .parameter_initialized_locals
@@ -220,9 +260,10 @@ impl<'a> FunctionCompiler<'a> {
             self.push_i32_const(JS_UNDEFINED_TAG);
         }
 
+        let instructions = std::mem::take(&mut self.instructions);
         Ok(CompiledFunction {
             local_count: self.next_local_index - self.param_count,
-            instructions: self.instructions,
+            instructions,
         })
     }
 
@@ -322,7 +363,8 @@ impl<'a> FunctionCompiler<'a> {
         kind: StaticValueKind,
     ) -> String {
         let name = format!("__ayy_{prefix}_{}", self.next_local_index);
-        self.locals.insert(name.clone(), self.next_local_index);
+        let next_local_index = self.next_local_index;
+        self.locals.insert(name.clone(), next_local_index);
         self.local_kinds.insert(name.clone(), kind);
         self.next_local_index += 1;
         name

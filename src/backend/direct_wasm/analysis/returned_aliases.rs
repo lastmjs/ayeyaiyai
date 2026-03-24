@@ -21,6 +21,19 @@ pub(in crate::backend::direct_wasm) fn collect_returned_identifier_source_expres
     })
 }
 
+pub(in crate::backend::direct_wasm) fn collect_returned_identifier_with_scope_objects(
+    statements: &[Statement],
+    returned_identifier: &str,
+) -> Option<Vec<Expression>> {
+    statements.iter().rev().find_map(|statement| {
+        collect_returned_identifier_with_scope_objects_from_statement(
+            statement,
+            returned_identifier,
+            &[],
+        )
+    })
+}
+
 pub(in crate::backend::direct_wasm) fn collect_returned_identifier_from_statement(
     statement: &Statement,
 ) -> Option<String> {
@@ -94,6 +107,132 @@ pub(in crate::backend::direct_wasm) fn collect_returned_identifier_source_expres
             .or_else(|| collect_returned_identifier_source_expression(init)),
         Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
             collect_returned_identifier_source_expression(body)
+        }
+        _ => None,
+    }
+}
+
+pub(in crate::backend::direct_wasm) fn collect_returned_identifier_with_scope_objects_from_statement(
+    statement: &Statement,
+    returned_identifier: &str,
+    active_with_scopes: &[Expression],
+) -> Option<Vec<Expression>> {
+    match statement {
+        Statement::Return(Expression::Identifier(name)) if name == returned_identifier => {
+            Some(active_with_scopes.to_vec())
+        }
+        Statement::Block { body } | Statement::Labeled { body, .. } => {
+            body.iter().rev().find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
+        }
+        Statement::With { object, body } => {
+            let mut nested_scopes = active_with_scopes.to_vec();
+            nested_scopes.push(object.clone());
+            body.iter().rev().find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    &nested_scopes,
+                )
+            })
+        }
+        Statement::If {
+            then_branch,
+            else_branch,
+            ..
+        } => then_branch
+            .iter()
+            .rev()
+            .find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
+            .or_else(|| {
+                else_branch.iter().rev().find_map(|statement| {
+                    collect_returned_identifier_with_scope_objects_from_statement(
+                        statement,
+                        returned_identifier,
+                        active_with_scopes,
+                    )
+                })
+            }),
+        Statement::Try {
+            body,
+            catch_setup,
+            catch_body,
+            ..
+        } => body
+            .iter()
+            .rev()
+            .find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
+            .or_else(|| {
+                catch_setup.iter().rev().find_map(|statement| {
+                    collect_returned_identifier_with_scope_objects_from_statement(
+                        statement,
+                        returned_identifier,
+                        active_with_scopes,
+                    )
+                })
+            })
+            .or_else(|| {
+                catch_body.iter().rev().find_map(|statement| {
+                    collect_returned_identifier_with_scope_objects_from_statement(
+                        statement,
+                        returned_identifier,
+                        active_with_scopes,
+                    )
+                })
+            }),
+        Statement::Switch { cases, .. } => cases.iter().rev().find_map(|case| {
+            case.body.iter().rev().find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
+        }),
+        Statement::For { init, body, .. } => body
+            .iter()
+            .rev()
+            .find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
+            .or_else(|| {
+                init.iter().rev().find_map(|statement| {
+                    collect_returned_identifier_with_scope_objects_from_statement(
+                        statement,
+                        returned_identifier,
+                        active_with_scopes,
+                    )
+                })
+            }),
+        Statement::While { body, .. } | Statement::DoWhile { body, .. } => {
+            body.iter().rev().find_map(|statement| {
+                collect_returned_identifier_with_scope_objects_from_statement(
+                    statement,
+                    returned_identifier,
+                    active_with_scopes,
+                )
+            })
         }
         _ => None,
     }

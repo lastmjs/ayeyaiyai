@@ -36,10 +36,15 @@ mod functions;
 mod generators;
 mod loops;
 mod patterns;
+mod state;
 mod statements;
 mod support;
 mod top_level;
 
+pub(crate) use self::state::Lowerer;
+use self::state::{
+    AssignmentTarget, BindingScope, ForOfBinding, ForOfPatternBindingKind, LogicalAssignmentKind,
+};
 use self::support::{
     assert_throws_call, collect_for_of_binding_names, collect_for_per_iteration_bindings,
     collect_function_scope_binding_names, collect_parameter_binding_names, collect_switch_bindings,
@@ -52,105 +57,3 @@ pub(crate) use self::support::{
     asyncify_statements, collect_direct_statement_lexical_bindings, data_property_descriptor,
     define_property_statement, getter_property_descriptor, setter_property_descriptor,
 };
-
-#[derive(Default)]
-pub(super) struct Lowerer {
-    pub(super) source_text: Option<String>,
-    pub(super) functions: Vec<FunctionDeclaration>,
-    pub(super) next_function_expression_id: usize,
-    pub(super) next_temporary_id: usize,
-    binding_scopes: Vec<BindingScope>,
-    pub(super) active_binding_counts: HashMap<String, usize>,
-    pub(super) private_name_scopes: Vec<HashMap<String, String>>,
-    pub(super) constructor_super_stack: Vec<Option<String>>,
-    pub(super) strict_modes: Vec<bool>,
-    pub(super) module_mode: bool,
-    pub(super) current_module_path: Option<PathBuf>,
-    pub(super) module_index_lookup: HashMap<PathBuf, usize>,
-}
-
-#[derive(Default)]
-struct BindingScope {
-    names: Vec<String>,
-    renames: HashMap<String, String>,
-}
-
-enum AssignmentTarget {
-    Identifier(String),
-    Member {
-        object: Expression,
-        property: Expression,
-    },
-    SuperMember {
-        property: Expression,
-    },
-}
-
-impl AssignmentTarget {
-    fn as_expression(&self) -> Expression {
-        match self {
-            AssignmentTarget::Identifier(name) => Expression::Identifier(name.clone()),
-            AssignmentTarget::Member { object, property } => Expression::Member {
-                object: Box::new(object.clone()),
-                property: Box::new(property.clone()),
-            },
-            AssignmentTarget::SuperMember { property } => Expression::SuperMember {
-                property: Box::new(property.clone()),
-            },
-        }
-    }
-
-    fn into_statement(self, value: Expression) -> Statement {
-        match self {
-            AssignmentTarget::Identifier(name) => Statement::Assign { name, value },
-            AssignmentTarget::Member { object, property } => Statement::AssignMember {
-                object,
-                property,
-                value,
-            },
-            AssignmentTarget::SuperMember { property } => {
-                Statement::Expression(Expression::AssignSuperMember {
-                    property: Box::new(property),
-                    value: Box::new(value),
-                })
-            }
-        }
-    }
-
-    fn into_expression(self, value: Expression) -> Expression {
-        match self {
-            AssignmentTarget::Identifier(name) => Expression::Assign {
-                name,
-                value: Box::new(value),
-            },
-            AssignmentTarget::Member { object, property } => Expression::AssignMember {
-                object: Box::new(object),
-                property: Box::new(property),
-                value: Box::new(value),
-            },
-            AssignmentTarget::SuperMember { property } => Expression::AssignSuperMember {
-                property: Box::new(property),
-                value: Box::new(value),
-            },
-        }
-    }
-}
-
-struct ForOfBinding {
-    before_loop: Vec<Statement>,
-    per_iteration: Vec<Statement>,
-}
-
-#[derive(Clone, Copy)]
-enum ForOfPatternBindingKind {
-    Assignment,
-    Var,
-    Lexical { mutable: bool },
-}
-
-#[derive(Clone, Copy)]
-enum LogicalAssignmentKind {
-    And,
-    Or,
-    Nullish,
-}

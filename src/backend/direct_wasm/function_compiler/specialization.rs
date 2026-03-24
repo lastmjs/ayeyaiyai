@@ -1,6 +1,61 @@
 use super::*;
 
 impl<'a> FunctionCompiler<'a> {
+    fn static_with_scope_unscopables_blocks_for_specialization(
+        &self,
+        scope_object: &Expression,
+        name: &str,
+    ) -> Option<bool> {
+        let unscopables_key = Expression::Member {
+            object: Box::new(Expression::Identifier("Symbol".to_string())),
+            property: Box::new(Expression::String("unscopables".to_string())),
+        };
+        if self
+            .resolve_member_getter_binding(scope_object, &unscopables_key)
+            .is_some()
+        {
+            return None;
+        }
+        let Some(scope_binding) = self.resolve_object_binding_from_expression(scope_object) else {
+            return Some(false);
+        };
+        let Some(unscopables_value) = object_binding_lookup_value(&scope_binding, &unscopables_key)
+        else {
+            return Some(false);
+        };
+        let Some(unscopables_object) =
+            self.resolve_object_binding_from_expression(unscopables_value)
+        else {
+            return Some(false);
+        };
+        let property = Expression::String(name.to_string());
+        Some(
+            object_binding_lookup_value(&unscopables_object, &property)
+                .and_then(|value| self.resolve_static_boolean_expression(value))
+                .unwrap_or(false),
+        )
+    }
+
+    fn resolve_with_scope_binding_for_specialization(&self, name: &str) -> Option<Expression> {
+        for scope_object in self.with_scopes.iter().rev() {
+            if self
+                .resolve_proxy_binding_from_expression(scope_object)
+                .is_some()
+            {
+                return None;
+            }
+            if !self.scope_object_has_binding_property(scope_object, name) {
+                continue;
+            }
+            match self.static_with_scope_unscopables_blocks_for_specialization(scope_object, name) {
+                Some(true) => continue,
+                Some(false) => return Some(scope_object.clone()),
+                None => return None,
+            }
+        }
+        None
+    }
+
     pub(in crate::backend::direct_wasm) fn collect_capture_bindings_from_expression(
         &self,
         expression: &Expression,
@@ -8,7 +63,11 @@ impl<'a> FunctionCompiler<'a> {
     ) {
         match expression {
             Expression::Identifier(name) => {
-                if self.locals.contains_key(name) {
+                if self.resolve_current_local_binding(name).is_some()
+                    || self
+                        .resolve_with_scope_binding_for_specialization(name)
+                        .is_some()
+                {
                     bindings.insert(name.clone());
                 }
             }
@@ -141,6 +200,10 @@ impl<'a> FunctionCompiler<'a> {
         expression: &Expression,
     ) -> Option<SpecializedFunctionValue> {
         match expression {
+            Expression::Call { callee, arguments } | Expression::New { callee, arguments } => self
+                .resolve_specialized_function_value_from_returned_call_expression(
+                    callee, arguments,
+                ),
             Expression::Identifier(name) => self
                 .local_specialized_function_values
                 .get(name)
@@ -153,6 +216,102 @@ impl<'a> FunctionCompiler<'a> {
                 }),
             _ => None,
         }
+    }
+
+    fn resolve_specialized_function_value_from_returned_call_expression(
+        &self,
+        callee: &Expression,
+        arguments: &[CallArgument],
+    ) -> Option<SpecializedFunctionValue> {
+        let LocalFunctionBinding::User(outer_function_name) = self
+            .resolve_function_binding_from_expression_with_context(
+                callee,
+                self.current_user_function_name.as_deref(),
+            )?
+        else {
+            return None;
+        };
+        let outer_user_function = self.module.user_function_map.get(&outer_function_name)?;
+        let outer_function =
+            self.resolve_registered_function_declaration(&outer_user_function.name)?;
+        let returned_function_name = collect_returned_identifier(&outer_function.body)?;
+        let inner_user_function = self.module.user_function_map.get(&returned_function_name)?;
+        if inner_user_function.is_async()
+            || inner_user_function.is_generator()
+            || inner_user_function.has_parameter_defaults()
+            || !inner_user_function.extra_argument_indices.is_empty()
+        {
+            return None;
+        }
+        let summary = inner_user_function.inline_summary.as_ref()?;
+        if inline_summary_mentions_call_frame_state(summary) && !inner_user_function.lexical_this {
+            return None;
+        }
+
+        let local_aliases = collect_returned_member_local_aliases(&outer_function.body);
+        let with_scope_objects = collect_returned_identifier_with_scope_objects(
+            &outer_function.body,
+            &returned_function_name,
+        )
+        .unwrap_or_default();
+        let captured = self
+            .module
+            .user_function_capture_bindings
+            .get(&returned_function_name)
+            .map(|bindings| bindings.keys().cloned().collect::<BTreeSet<_>>())
+            .unwrap_or_else(|| self.collect_capture_bindings_from_summary(summary));
+        let mut bindings = HashMap::new();
+
+        for capture_name in captured {
+            let bound_expression = if let Some(alias) = local_aliases.get(&capture_name) {
+                self.substitute_user_function_argument_bindings(
+                    alias,
+                    outer_user_function,
+                    arguments,
+                )
+            } else if let Some(param_name) = outer_user_function.params.iter().find(|param| {
+                *param == &capture_name
+                    || scoped_binding_source_name(param)
+                        .is_some_and(|source_name| source_name == capture_name)
+            }) {
+                self.substitute_user_function_argument_bindings(
+                    &Expression::Identifier(param_name.clone()),
+                    outer_user_function,
+                    arguments,
+                )
+            } else if let Some(scope_expression) =
+                with_scope_objects.iter().rev().find_map(|scope_object| {
+                    let aliased_scope_object = resolve_returned_member_local_alias_expression(
+                        scope_object,
+                        &local_aliases,
+                    );
+                    let substituted_scope_object = self.substitute_user_function_argument_bindings(
+                        &aliased_scope_object,
+                        outer_user_function,
+                        arguments,
+                    );
+                    self.scope_object_has_binding_property(&substituted_scope_object, &capture_name)
+                        .then_some(substituted_scope_object)
+                })
+            {
+                self.materialize_static_expression(&Expression::Member {
+                    object: Box::new(scope_expression),
+                    property: Box::new(Expression::String(capture_name.clone())),
+                })
+            } else {
+                Expression::Identifier(capture_name.clone())
+            };
+
+            if !inline_summary_side_effect_free_expression(&bound_expression) {
+                return None;
+            }
+            bindings.insert(capture_name, bound_expression);
+        }
+
+        Some(SpecializedFunctionValue {
+            binding: LocalFunctionBinding::User(returned_function_name),
+            summary: rewrite_inline_function_summary_bindings(summary, &bindings),
+        })
     }
 
     pub(in crate::backend::direct_wasm) fn resolve_function_value_template_from_expression(
@@ -194,20 +353,69 @@ impl<'a> FunctionCompiler<'a> {
 
         let mut bindings = HashMap::new();
         for name in captured {
+            if let Some((resolved_name, _)) = self.resolve_current_local_binding(&name) {
+                let hidden_name = self.allocate_named_hidden_local(
+                    "capture",
+                    self.lookup_identifier_kind(&resolved_name)
+                        .unwrap_or(StaticValueKind::Unknown),
+                );
+                self.emit_numeric_expression(&Expression::Identifier(resolved_name.clone()))?;
+                let hidden_local = self
+                    .locals
+                    .get(&hidden_name)
+                    .copied()
+                    .expect("hidden capture local should be allocated");
+                self.push_local_set(hidden_local);
+                self.alias_runtime_binding_metadata(&hidden_name, &resolved_name);
+                bindings.insert(name, Expression::Identifier(hidden_name));
+                continue;
+            }
+
+            let Some(scope_object) = self.resolve_with_scope_binding_for_specialization(&name)
+            else {
+                continue;
+            };
+            if let Expression::Identifier(scope_name) = &scope_object
+                && self
+                    .parameter_scope_arguments_local_for(scope_name)
+                    .is_none()
+                && self.resolve_current_local_binding(scope_name).is_none()
+                && self
+                    .resolve_eval_local_function_hidden_name(scope_name)
+                    .is_none()
+                && self
+                    .resolve_user_function_capture_hidden_name(scope_name)
+                    .is_none()
+            {
+                bindings.insert(
+                    name.clone(),
+                    Expression::Member {
+                        object: Box::new(scope_object),
+                        property: Box::new(Expression::String(name)),
+                    },
+                );
+                continue;
+            }
             let hidden_name = self.allocate_named_hidden_local(
-                "capture",
-                self.lookup_identifier_kind(&name)
-                    .unwrap_or(StaticValueKind::Unknown),
+                "capture_scope",
+                self.infer_value_kind(&scope_object)
+                    .unwrap_or(StaticValueKind::Object),
             );
-            self.emit_numeric_expression(&Expression::Identifier(name.clone()))?;
+            self.emit_numeric_expression(&scope_object)?;
             let hidden_local = self
                 .locals
                 .get(&hidden_name)
                 .copied()
-                .expect("hidden capture local should be allocated");
+                .expect("hidden capture scope local should be allocated");
             self.push_local_set(hidden_local);
-            self.alias_runtime_binding_metadata(&hidden_name, &name);
-            bindings.insert(name, Expression::Identifier(hidden_name));
+            self.update_capture_slot_binding_from_expression(&hidden_name, &scope_object)?;
+            bindings.insert(
+                name.clone(),
+                Expression::Member {
+                    object: Box::new(Expression::Identifier(hidden_name)),
+                    property: Box::new(Expression::String(name)),
+                },
+            );
         }
 
         Ok(Some(SpecializedFunctionValue {

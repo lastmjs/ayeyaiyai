@@ -21,6 +21,7 @@ impl DirectWasmCompiler {
         self.global_kinds.clear();
         self.global_value_bindings.clear();
         self.global_array_bindings.clear();
+        self.global_arrays_with_runtime_state.clear();
         self.global_object_bindings.clear();
         self.global_property_descriptors.clear();
         self.global_object_prototype_bindings.clear();
@@ -32,10 +33,12 @@ impl DirectWasmCompiler {
         self.implicit_global_bindings.clear();
         self.global_proxy_bindings.clear();
         self.global_member_function_bindings.clear();
+        self.global_member_function_capture_slots.clear();
         self.global_member_getter_bindings.clear();
         self.global_member_setter_bindings.clear();
         self.eval_local_function_bindings.clear();
         self.user_function_capture_bindings.clear();
+        self.user_function_assigned_nonlocal_binding_results.clear();
         self.next_test262_realm_id = 0;
         self.test262_realms.clear();
         self.string_data.clear();
@@ -216,17 +219,21 @@ impl DirectWasmCompiler {
         if !self.user_function_map.contains_key(&returned_function_name) {
             return;
         }
-        let Some(user_function) = self.user_function_map.get(&function.name) else {
+        let Some(returned_member_value_bindings) = self
+            .user_function_map
+            .get(&function.name)
+            .map(|user_function| user_function.returned_member_value_bindings.clone())
+        else {
             return;
         };
-        if user_function.returned_member_value_bindings.is_empty() {
+        if returned_member_value_bindings.is_empty() {
             return;
         }
         let object_binding = self
             .global_object_bindings
             .entry(returned_function_name)
             .or_insert_with(empty_object_value_binding);
-        for binding in &user_function.returned_member_value_bindings {
+        for binding in &returned_member_value_bindings {
             object_binding_set_property(
                 object_binding,
                 Expression::String(binding.property.clone()),
@@ -294,7 +301,7 @@ impl DirectWasmCompiler {
             .get(&function.name)
             .cloned()
             .unwrap_or_default();
-        FunctionCompiler::new(
+        let function_compiler = FunctionCompiler::new(
             self,
             Some(&user_function),
             true,
@@ -304,7 +311,32 @@ impl DirectWasmCompiler {
             &parameter_value_bindings,
             &parameter_array_bindings,
             &parameter_object_bindings,
-        )?
-        .compile(&function.body)
+        )?;
+        let assigned_nonlocal_bindings =
+            function_compiler.collect_user_function_assigned_nonlocal_bindings(&user_function);
+        let compiled = function_compiler.compile(&function.body)?;
+        let assigned_nonlocal_binding_results = assigned_nonlocal_bindings
+            .into_iter()
+            .filter(|name| {
+                self.global_bindings.contains_key(name)
+                    || self.implicit_global_bindings.contains_key(name)
+            })
+            .map(|name| {
+                (
+                    name.clone(),
+                    self.global_value_bindings
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or(Expression::Undefined),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        if !assigned_nonlocal_binding_results.is_empty() {
+            self.user_function_assigned_nonlocal_binding_results.insert(
+                user_function.name.clone(),
+                assigned_nonlocal_binding_results,
+            );
+        }
+        Ok(compiled)
     }
 }

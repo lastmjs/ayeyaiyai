@@ -1,3 +1,4 @@
+mod scope_stack;
 mod support;
 
 pub mod refined_aot;

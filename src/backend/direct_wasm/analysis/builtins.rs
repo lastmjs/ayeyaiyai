@@ -10,7 +10,7 @@ pub(in crate::backend::direct_wasm) fn infer_call_result_kind(
         "isNaN" => Some(StaticValueKind::Bool),
         "Object" | "Array" | "ArrayBuffer" | "Date" | "RegExp" | "Map" | "Set" | "Error"
         | "EvalError" | "RangeError" | "ReferenceError" | "SyntaxError" | "TypeError"
-        | "URIError" | "AggregateError" | "Promise" => Some(StaticValueKind::Object),
+        | "URIError" | "AggregateError" | "Promise" | "WeakRef" => Some(StaticValueKind::Object),
         "Uint8Array" | "Int8Array" | "Uint16Array" | "Int16Array" | "Uint32Array"
         | "Int32Array" | "Float32Array" | "Float64Array" | "Uint8ClampedArray" => {
             Some(StaticValueKind::Object)

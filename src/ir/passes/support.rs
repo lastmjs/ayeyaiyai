@@ -8,13 +8,10 @@ pub(super) fn collect_statement_bindings<'a>(
     let mut bindings = Vec::new();
     let mut seen = HashSet::new();
     for statement in statements {
-        match statement {
-            Statement::Var { name, .. } | Statement::Let { name, .. } => {
-                if seen.insert(name.clone()) {
-                    bindings.push(name.clone());
-                }
-            }
-            _ => {}
+        if let Some(name) = statement.declared_binding_name()
+            && seen.insert(name.to_string())
+        {
+            bindings.push(name.to_string());
         }
     }
     bindings

@@ -672,7 +672,7 @@ pub(in crate::backend::direct_wasm) fn builtin_identifier_kind(
         | "RangeError" | "ReferenceError" | "SyntaxError" | "TypeError" | "URIError"
         | "AggregateError" | "Uint8Array" | "Int8Array" | "Uint16Array" | "Int16Array"
         | "Uint32Array" | "Int32Array" | "Float32Array" | "Float64Array" | "Uint8ClampedArray"
-        | "Promise" | "eval" => Some(StaticValueKind::Function),
+        | "Promise" | "WeakRef" | "eval" => Some(StaticValueKind::Function),
         "Math" | "JSON" | "globalThis" => Some(StaticValueKind::Object),
         "Infinity" | "NaN" | "undefined" => Some(StaticValueKind::Undefined),
         _ => None,

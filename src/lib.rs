@@ -12,8 +12,7 @@ pub use compile_options::CompileOptions;
 
 pub fn compile_file(path: &Path, options: &CompileOptions) -> Result<()> {
     let program = frontend::bundle_script_entry(path)?;
-    ir::passes::refined_aot::validate(&program)?;
-    let program = ir::passes::static_function_constructors::lower(program)?;
+    let program = ir::pipeline::prepare(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -22,13 +21,15 @@ pub fn compile_file(path: &Path, options: &CompileOptions) -> Result<()> {
 }
 
 pub fn compile_file_with_goal(path: &Path, options: &CompileOptions, module: bool) -> Result<()> {
+    if module {
+        bail!("module goals are not yet supported by the direct wasm backend");
+    }
     let program = if module {
         frontend::bundle_module_entry(path)?
     } else {
         frontend::bundle_script_entry(path)?
     };
-    ir::passes::refined_aot::validate(&program)?;
-    let program = ir::passes::static_function_constructors::lower(program)?;
+    let program = ir::pipeline::prepare(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -44,13 +45,15 @@ pub fn compile_source_with_goal(
     options: &CompileOptions,
     module: bool,
 ) -> Result<()> {
+    if module {
+        bail!("module goals are not yet supported by the direct wasm backend");
+    }
     let program = if module {
         frontend::parse_module_goal(source)?
     } else {
         frontend::parse(source)?
     };
-    ir::passes::refined_aot::validate(&program)?;
-    let program = ir::passes::static_function_constructors::lower(program)?;
+    let program = ir::pipeline::prepare(program)?;
     if backend::compile_if_supported(&program, options)? {
         return Ok(());
     }
@@ -59,8 +62,7 @@ pub fn compile_source_with_goal(
 
 pub fn compile_source_with_reason(source: &str) -> std::result::Result<(), String> {
     let program = frontend::parse(source).map_err(|_| "source failed to parse".to_string())?;
-    ir::passes::refined_aot::validate(&program)
-        .map_err(|_| "refined aot validation failed".to_string())?;
+    ir::pipeline::validate(&program).map_err(|_| "refined aot validation failed".to_string())?;
     let program = ir::passes::static_function_constructors::lower(program)
         .map_err(|_| "static function constructor lowering failed".to_string())?;
     match backend::emit_wasm_with_reason(&program) {

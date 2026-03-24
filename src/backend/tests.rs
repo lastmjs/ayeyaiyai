@@ -928,7 +928,7 @@ fn emits_direct_wasm_bytes_for_labeled_for_of_continue_current_loop() {
 }
 
 #[test]
-fn rejects_generator_functions_from_direct_backend_path() {
+fn compiles_simple_generator_functions_from_direct_backend_path() {
     let tempdir = tempfile::tempdir().unwrap();
     let output = tempdir.path().join("generator.wasm");
     let options = CompileOptions {
@@ -936,15 +936,16 @@ fn rejects_generator_functions_from_direct_backend_path() {
         target: "wasm32-wasip2".to_string(),
     };
 
-    let result = compile_source("function* generator() { yield 1; }", &options);
+    let result = compile_source(
+        r#"
+        function* generator(value) { yield value + 1; }
+        let iterator = generator(3);
+        console.log(iterator.next().value, iterator.next().done);
+        "#,
+        &options,
+    );
 
-    assert!(result.is_err());
-    assert!(matches!(
-        result.err().map(|error| error
-            .to_string()
-            .contains("not yet supported by the direct wasm backend")),
-        Some(true)
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]

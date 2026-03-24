@@ -1,26 +1,14 @@
 use super::*;
 
-mod arguments;
-mod arrays;
-mod assignments;
-mod binding_registration;
 mod bindings;
-mod builtin_calls;
-mod call_resolution;
-mod control_flow;
+mod calls;
 mod core;
-mod eval;
-mod expression_codegen;
-mod inline_calls;
-mod object_state;
+mod emission;
 mod specialization;
-mod static_values;
-mod strings;
 mod support;
-mod typed_arrays;
-mod user_calls;
+mod values;
 
-pub(super) use self::support::*;
+pub(in crate::backend::direct_wasm) use self::support::*;
 
 #[cfg(test)]
 mod tests;
