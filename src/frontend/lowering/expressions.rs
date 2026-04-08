@@ -299,15 +299,15 @@ impl Lowerer {
         let assignment = self.lower_assignment_expression(target, right)?;
 
         let expression = match kind {
-            LogicalAssignmentKind::And => Expression::Conditional {
-                condition: Box::new(current.clone()),
-                then_expression: Box::new(assignment),
-                else_expression: Box::new(current),
+            LogicalAssignmentKind::And => Expression::Binary {
+                op: BinaryOp::LogicalAnd,
+                left: Box::new(current),
+                right: Box::new(assignment),
             },
-            LogicalAssignmentKind::Or => Expression::Conditional {
-                condition: Box::new(current.clone()),
-                then_expression: Box::new(current),
-                else_expression: Box::new(assignment),
+            LogicalAssignmentKind::Or => Expression::Binary {
+                op: BinaryOp::LogicalOr,
+                left: Box::new(current),
+                right: Box::new(assignment),
             },
             LogicalAssignmentKind::Nullish => {
                 let not_undefined = Expression::Binary {
@@ -366,6 +366,7 @@ impl Lowerer {
                         mapped_arguments: self.function_has_mapped_arguments(&method.function),
                         strict: self.function_strict_mode(&method.function),
                         lexical_this: false,
+                        derived_constructor: false,
                         length: expected_argument_count(
                             method
                                 .function
@@ -403,6 +404,7 @@ impl Lowerer {
                         mapped_arguments: false,
                         strict: strict_mode,
                         lexical_this: false,
+                        derived_constructor: false,
                         length: 0,
                     });
 
@@ -439,6 +441,7 @@ impl Lowerer {
                         mapped_arguments: false,
                         strict: strict_mode,
                         lexical_this: false,
+                        derived_constructor: false,
                         length: 1,
                     });
 

@@ -32,6 +32,12 @@ impl Lowerer {
 
                 self.lower_expression_statement(expr)
             }
+            Stmt::Decl(Decl::Var(variable_declaration)) => {
+                self.lower_generator_variable_declaration(variable_declaration)
+            }
+            Stmt::Decl(Decl::Class(class_declaration)) => {
+                self.lower_generator_class_declaration(class_declaration)
+            }
             Stmt::Block(BlockStmt { stmts, .. })
                 if stmts
                     .iter()
@@ -70,7 +76,7 @@ impl Lowerer {
                 body: self.lower_generator_loop_body(&for_statement.body, allow_return)?,
             }]),
             Stmt::ForOf(for_of_statement) => {
-                self.lower_for_of_statement(for_of_statement, allow_return)
+                self.lower_generator_for_of_statement(for_of_statement, allow_return)
             }
             Stmt::ForIn(for_in_statement) => {
                 self.lower_for_in_statement(for_in_statement, allow_return)
@@ -108,6 +114,93 @@ impl Lowerer {
             Stmt::Empty(_) => Ok(Vec::new()),
             other => self.lower_statement(other, allow_return, false),
         }
+    }
+
+    pub(crate) fn lower_generator_variable_declaration(
+        &mut self,
+        variable_declaration: &swc_ecma_ast::VarDecl,
+    ) -> Result<Vec<Statement>> {
+        let mut lowered = Vec::new();
+
+        for declarator in &variable_declaration.decls {
+            let generator_value = declarator
+                .init
+                .as_deref()
+                .map(|initializer| self.lower_generator_assignment_value(initializer))
+                .transpose()?
+                .flatten();
+
+            if let Pat::Ident(identifier) = &declarator.name {
+                let name = self.resolve_binding_name(identifier.id.sym.as_ref());
+                let value = if let Some((mut generator_prefix, value)) = generator_value {
+                    lowered.append(&mut generator_prefix);
+                    value
+                } else {
+                    match declarator.init.as_deref() {
+                        Some(initializer) => self.lower_expression_with_name_hint(
+                            initializer,
+                            Some(identifier.id.sym.as_ref()),
+                        )?,
+                        None => Expression::Undefined,
+                    }
+                };
+
+                if matches!(variable_declaration.kind, VarDeclKind::Var) {
+                    lowered.push(Statement::Var { name, value });
+                } else {
+                    lowered.push(Statement::Let {
+                        name,
+                        mutable: !matches!(variable_declaration.kind, VarDeclKind::Const),
+                        value,
+                    });
+                }
+                continue;
+            }
+
+            if matches!(variable_declaration.kind, VarDeclKind::Var) {
+                let mut names = Vec::new();
+                collect_pattern_binding_names(&declarator.name, &mut names)?;
+                for name in names {
+                    lowered.push(Statement::Var {
+                        name,
+                        value: Expression::Undefined,
+                    });
+                }
+            }
+
+            let temporary_name = self.fresh_temporary_name("decl");
+            let value = if let Some((mut generator_prefix, value)) = generator_value {
+                lowered.append(&mut generator_prefix);
+                value
+            } else {
+                match declarator.init.as_deref() {
+                    Some(initializer) => self.lower_expression_with_name_hint(
+                        initializer,
+                        pattern_name_hint(&declarator.name),
+                    )?,
+                    None => Expression::Undefined,
+                }
+            };
+            lowered.push(Statement::Let {
+                name: temporary_name.clone(),
+                mutable: true,
+                value,
+            });
+            self.lower_for_of_pattern_binding(
+                &declarator.name,
+                Expression::Identifier(temporary_name),
+                if matches!(variable_declaration.kind, VarDeclKind::Var) {
+                    ForOfPatternBindingKind::Assignment
+                } else {
+                    ForOfPatternBindingKind::Lexical {
+                        mutable: !matches!(variable_declaration.kind, VarDeclKind::Const),
+                    }
+                },
+                &mut lowered,
+            )?;
+        }
+
+        Ok(lowered)
     }
 
     pub(crate) fn lower_generator_loop_body(
@@ -277,13 +370,26 @@ impl Lowerer {
             return Ok(None);
         }
 
-        let Some((mut lowered, value)) =
-            self.lower_generator_assignment_value(&assignment.right)?
-        else {
-            return Ok(None);
-        };
+        let target = self.lower_generator_assignment_target(&assignment.left)?;
+        let value = self.lower_generator_assignment_value(&assignment.right)?;
 
-        let target = self.lower_assignment_target(&assignment.left)?;
+        if target.is_none() && value.is_none() {
+            return Ok(None);
+        }
+
+        let mut lowered = Vec::new();
+        let target = if let Some((mut prefix, target)) = target {
+            lowered.append(&mut prefix);
+            target
+        } else {
+            self.lower_assignment_target(&assignment.left)?
+        };
+        let value = if let Some((mut prefix, value)) = value {
+            lowered.append(&mut prefix);
+            value
+        } else {
+            self.lower_expression(&assignment.right)?
+        };
         lowered.push(target.into_statement(value));
         Ok(Some(lowered))
     }
@@ -301,7 +407,7 @@ impl Lowerer {
                 self.lower_generator_assignment_value(&parenthesized.expr)
             }
             Expr::Tpl(template) => self.lower_generator_template_value(template),
-            _ => Ok(None),
+            _ => self.lower_generator_nested_yield_value(expression),
         }
     }
 
@@ -405,7 +511,16 @@ impl Lowerer {
                 }));
                 Ok(Some(lowered))
             }
-            _ => Ok(None),
+            _ => {
+                if let Some((mut lowered, expression)) =
+                    self.lower_generator_nested_yield_value(expression)?
+                {
+                    lowered.push(Statement::Expression(expression));
+                    Ok(Some(lowered))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
@@ -459,6 +574,220 @@ impl Lowerer {
         Ok(Some((lowered, expression)))
     }
 
+    fn lower_generator_nested_yield_value(
+        &mut self,
+        expression: &Expr,
+    ) -> Result<Option<(Vec<Statement>, Expression)>> {
+        match expression {
+            Expr::Yield(yield_expression) => Ok(Some((
+                self.lower_generator_yield_statement(yield_expression)?,
+                Expression::Sent,
+            ))),
+            Expr::Paren(parenthesized) => {
+                self.lower_generator_nested_yield_value(&parenthesized.expr)
+            }
+            Expr::Array(array) => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let mut elements = Vec::with_capacity(array.elems.len());
+                for element in &array.elems {
+                    let Some(element) = element else {
+                        elements.push(ArrayElement::Expression(Expression::Undefined));
+                        continue;
+                    };
+                    let expression = if let Some((mut nested, expression)) =
+                        self.lower_generator_nested_yield_value(&element.expr)?
+                    {
+                        handled = true;
+                        lowered.append(&mut nested);
+                        expression
+                    } else {
+                        self.lower_expression(&element.expr)?
+                    };
+                    elements.push(if element.spread.is_some() {
+                        ArrayElement::Spread(expression)
+                    } else {
+                        ArrayElement::Expression(expression)
+                    });
+                }
+                Ok(handled.then_some((lowered, Expression::Array(elements))))
+            }
+            Expr::Object(object) => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let mut entries = Vec::with_capacity(object.props.len());
+                for property in &object.props {
+                    match property {
+                        PropOrSpread::Spread(spread) => {
+                            let expression = if let Some((mut nested, expression)) =
+                                self.lower_generator_nested_yield_value(&spread.expr)?
+                            {
+                                handled = true;
+                                lowered.append(&mut nested);
+                                expression
+                            } else {
+                                self.lower_expression(&spread.expr)?
+                            };
+                            entries.push(ObjectEntry::Spread(expression));
+                        }
+                        _ => entries.push(self.lower_object_entry(property)?),
+                    }
+                }
+                Ok(handled.then_some((lowered, Expression::Object(entries))))
+            }
+            Expr::Member(member) => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let object = if let Some((mut nested, object)) =
+                    self.lower_generator_nested_yield_value(&member.obj)?
+                {
+                    handled = true;
+                    lowered.append(&mut nested);
+                    object
+                } else {
+                    self.lower_expression(&member.obj)?
+                };
+                let property = match &member.prop {
+                    MemberProp::Ident(identifier) => Expression::String(identifier.sym.to_string()),
+                    MemberProp::PrivateName(private_name) => {
+                        self.lower_private_name(private_name)?
+                    }
+                    MemberProp::Computed(computed) => {
+                        if let Some((mut nested, property)) =
+                            self.lower_generator_nested_yield_value(&computed.expr)?
+                        {
+                            handled = true;
+                            lowered.append(&mut nested);
+                            property
+                        } else {
+                            self.lower_expression(&computed.expr)?
+                        }
+                    }
+                };
+                Ok(handled.then_some((
+                    lowered,
+                    Expression::Member {
+                        object: Box::new(object),
+                        property: Box::new(property),
+                    },
+                )))
+            }
+            Expr::Call(call) => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let callee = match &call.callee {
+                    Callee::Expr(callee) => {
+                        let callee = if let Some((mut nested, callee)) =
+                            self.lower_generator_nested_yield_value(callee)?
+                        {
+                            handled = true;
+                            lowered.append(&mut nested);
+                            callee
+                        } else {
+                            self.lower_expression(callee)?
+                        };
+                        Expression::Call {
+                            callee: Box::new(callee),
+                            arguments: call
+                                .args
+                                .iter()
+                                .map(|argument| {
+                                    let expression = if let Some((mut nested, expression)) =
+                                        self.lower_generator_nested_yield_value(&argument.expr)?
+                                    {
+                                        handled = true;
+                                        lowered.append(&mut nested);
+                                        expression
+                                    } else {
+                                        self.lower_expression(&argument.expr)?
+                                    };
+                                    Ok(if argument.spread.is_some() {
+                                        CallArgument::Spread(expression)
+                                    } else {
+                                        CallArgument::Expression(expression)
+                                    })
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                        }
+                    }
+                    Callee::Super(_) | Callee::Import(_) => return Ok(None),
+                };
+                Ok(handled.then_some((lowered, callee)))
+            }
+            Expr::Assign(assignment) if assignment.op == AssignOp::Assign => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let target = if let Some((mut nested, target)) =
+                    self.lower_generator_assignment_target(&assignment.left)?
+                {
+                    handled = true;
+                    lowered.append(&mut nested);
+                    target
+                } else {
+                    self.lower_assignment_target(&assignment.left)?
+                };
+                let value = if let Some((mut nested, value)) =
+                    self.lower_generator_nested_yield_value(&assignment.right)?
+                {
+                    handled = true;
+                    lowered.append(&mut nested);
+                    value
+                } else {
+                    self.lower_expression(&assignment.right)?
+                };
+                Ok(handled.then_some((lowered, target.into_expression(value))))
+            }
+            Expr::Class(class_expression) => {
+                let (lowered, expression) =
+                    self.lower_generator_class_expression(class_expression, None)?;
+                Ok(Some((lowered, expression)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn lower_generator_assignment_target(
+        &mut self,
+        target: &AssignTarget,
+    ) -> Result<Option<(Vec<Statement>, AssignmentTarget)>> {
+        match target {
+            AssignTarget::Simple(SimpleAssignTarget::Ident(_))
+            | AssignTarget::Simple(SimpleAssignTarget::SuperProp(_)) => Ok(None),
+            AssignTarget::Simple(SimpleAssignTarget::Member(member)) => {
+                let mut lowered = Vec::new();
+                let mut handled = false;
+                let object = if let Some((mut nested, object)) =
+                    self.lower_generator_nested_yield_value(&member.obj)?
+                {
+                    handled = true;
+                    lowered.append(&mut nested);
+                    object
+                } else {
+                    self.lower_expression(&member.obj)?
+                };
+                let property = match &member.prop {
+                    MemberProp::Ident(identifier) => Expression::String(identifier.sym.to_string()),
+                    MemberProp::PrivateName(private_name) => {
+                        self.lower_private_name(private_name)?
+                    }
+                    MemberProp::Computed(computed) => {
+                        if let Some((mut nested, property)) =
+                            self.lower_generator_nested_yield_value(&computed.expr)?
+                        {
+                            handled = true;
+                            lowered.append(&mut nested);
+                            property
+                        } else {
+                            self.lower_expression(&computed.expr)?
+                        }
+                    }
+                };
+                Ok(handled.then_some((lowered, AssignmentTarget::Member { object, property })))
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn lower_generator_yield_statement(
         &mut self,
         yield_expression: &swc_ecma_ast::YieldExpr,
@@ -477,26 +806,17 @@ impl Lowerer {
             None => Ok(vec![Statement::Yield {
                 value: Expression::Undefined,
             }]),
-            Some(Expr::Yield(inner_yield)) => {
-                ensure!(
-                    !inner_yield.delegate,
-                    "`yield*` as the operand of another `yield` is not supported yet"
-                );
-                Ok(vec![
-                    Statement::Yield {
-                        value: match inner_yield.arg.as_deref() {
-                            Some(value) => self.lower_expression(value)?,
-                            None => Expression::Undefined,
-                        },
-                    },
-                    Statement::Yield {
-                        value: Expression::Sent,
-                    },
-                ])
+            Some(value) => {
+                if let Some((mut lowered, expression)) =
+                    self.lower_generator_nested_yield_value(value)?
+                {
+                    lowered.push(Statement::Yield { value: expression });
+                    return Ok(lowered);
+                }
+                Ok(vec![Statement::Yield {
+                    value: self.lower_expression(value)?,
+                }])
             }
-            Some(value) => Ok(vec![Statement::Yield {
-                value: self.lower_expression(value)?,
-            }]),
         }
     }
 }

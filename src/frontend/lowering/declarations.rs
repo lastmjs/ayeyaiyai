@@ -109,6 +109,7 @@ impl Lowerer {
             mapped_arguments: self.function_has_mapped_arguments(&function_declaration.function),
             strict: self.function_strict_mode(&function_declaration.function),
             lexical_this: false,
+            derived_constructor: false,
             length: expected_argument_count(
                 function_declaration
                     .function

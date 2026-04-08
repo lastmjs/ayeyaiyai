@@ -7,19 +7,24 @@ impl<'a> FunctionCompiler<'a> {
     ) -> DirectResult<()> {
         for statement in statements {
             match statement {
-                Statement::Block { body } | Statement::Labeled { body, .. } => {
-                    self.register_bindings(body)?
-                }
+                Statement::Declaration { body }
+                | Statement::Block { body }
+                | Statement::Labeled { body, .. } => self.register_bindings(body)?,
                 Statement::Var { name, .. } | Statement::Let { name, .. } => {
-                    if self.top_level_function && self.module.global_bindings.contains_key(name) {
+                    if self.state.speculation.execution_context.top_level_function
+                        && self.backend.global_has_binding(name)
+                    {
                         continue;
                     }
-                    if self.locals.contains_key(name) {
+                    if self.state.runtime.locals.bindings.contains_key(name) {
                         continue;
                     }
-                    let next_local_index = self.next_local_index;
-                    self.locals.insert(name.clone(), next_local_index);
-                    self.next_local_index += 1;
+                    let next_local_index = self.state.runtime.locals.next_local_index;
+                    self.state
+                        .runtime
+                        .locals
+                        .insert(name.clone(), next_local_index);
+                    self.state.runtime.locals.next_local_index += 1;
                 }
                 Statement::If {
                     then_branch,
@@ -44,12 +49,23 @@ impl<'a> FunctionCompiler<'a> {
                 } => {
                     self.register_bindings(body)?;
                     if let Some(catch_binding) = catch_binding {
-                        if !self.locals.contains_key(catch_binding) {
-                            let next_local_index = self.next_local_index;
-                            self.locals.insert(catch_binding.clone(), next_local_index);
-                            self.local_kinds
-                                .insert(catch_binding.clone(), StaticValueKind::Object);
-                            self.next_local_index += 1;
+                        if !self
+                            .state
+                            .runtime
+                            .locals
+                            .bindings
+                            .contains_key(catch_binding)
+                        {
+                            let next_local_index = self.state.runtime.locals.next_local_index;
+                            self.state
+                                .runtime
+                                .locals
+                                .insert(catch_binding.clone(), next_local_index);
+                            self.state
+                                .speculation
+                                .static_semantics
+                                .set_local_kind(catch_binding, StaticValueKind::Object);
+                            self.state.runtime.locals.next_local_index += 1;
                         }
                     }
                     self.register_bindings(catch_setup)?;
@@ -63,14 +79,19 @@ impl<'a> FunctionCompiler<'a> {
                 } => {
                     self.register_bindings(init)?;
                     for binding in per_iteration_bindings {
-                        if self.locals.contains_key(binding) {
+                        if self.state.runtime.locals.bindings.contains_key(binding) {
                             continue;
                         }
-                        let next_local_index = self.next_local_index;
-                        self.locals.insert(binding.clone(), next_local_index);
-                        self.local_kinds
-                            .insert(binding.clone(), StaticValueKind::Unknown);
-                        self.next_local_index += 1;
+                        let next_local_index = self.state.runtime.locals.next_local_index;
+                        self.state
+                            .runtime
+                            .locals
+                            .insert(binding.clone(), next_local_index);
+                        self.state
+                            .speculation
+                            .static_semantics
+                            .set_local_kind(binding, StaticValueKind::Unknown);
+                        self.state.runtime.locals.next_local_index += 1;
                     }
                     self.register_bindings(body)?;
                 }
@@ -78,14 +99,19 @@ impl<'a> FunctionCompiler<'a> {
                     bindings, cases, ..
                 } => {
                     for binding in bindings {
-                        if self.locals.contains_key(binding) {
+                        if self.state.runtime.locals.bindings.contains_key(binding) {
                             continue;
                         }
-                        let next_local_index = self.next_local_index;
-                        self.locals.insert(binding.clone(), next_local_index);
-                        self.local_kinds
-                            .insert(binding.clone(), StaticValueKind::Unknown);
-                        self.next_local_index += 1;
+                        let next_local_index = self.state.runtime.locals.next_local_index;
+                        self.state
+                            .runtime
+                            .locals
+                            .insert(binding.clone(), next_local_index);
+                        self.state
+                            .speculation
+                            .static_semantics
+                            .set_local_kind(binding, StaticValueKind::Unknown);
+                        self.state.runtime.locals.next_local_index += 1;
                     }
                     for case in cases {
                         self.register_bindings(&case.body)?;

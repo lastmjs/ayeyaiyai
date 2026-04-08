@@ -1,31 +1,27 @@
 use super::*;
 
 impl DirectWasmCompiler {
+    fn resolve_global_user_function_from_identifier(&self, name: &str) -> Option<&UserFunction> {
+        self.resolve_user_function_by_binding_name(name)
+    }
+
     pub(in crate::backend::direct_wasm) fn infer_global_arguments_binding(
         &self,
         expression: &Expression,
     ) -> Option<ArgumentsValueBinding> {
         match expression {
-            Expression::Identifier(name) => self.global_arguments_bindings.get(name).cloned(),
+            Expression::Identifier(name) => self.global_arguments_binding(name).cloned(),
             Expression::Call { callee, arguments } | Expression::New { callee, arguments } => {
                 let Expression::Identifier(name) = callee.as_ref() else {
                     return None;
                 };
-                let user_function = if let Some(LocalFunctionBinding::User(function_name)) =
-                    self.global_function_bindings.get(name)
-                {
-                    self.user_function_map.get(function_name)
-                } else if is_internal_user_function_identifier(name) {
-                    self.user_function_map.get(name)
-                } else {
-                    None
-                }?;
+                let user_function = self.resolve_global_user_function_from_identifier(name)?;
                 if !user_function.returns_arguments_object {
                     return None;
                 }
                 Some(ArgumentsValueBinding::for_user_function(
                     user_function,
-                    expand_static_call_arguments(arguments, &self.global_array_bindings),
+                    self.expanded_global_static_call_arguments(arguments),
                 ))
             }
             _ => None,
@@ -37,54 +33,38 @@ impl DirectWasmCompiler {
         expression: &Expression,
     ) -> Option<ArrayValueBinding> {
         match expression {
-            Expression::Identifier(name) => self.global_array_bindings.get(name).cloned(),
-            Expression::EnumerateKeys(value) => self.infer_enumerated_keys_binding(value),
+            Expression::Identifier(name) => self.global_array_binding(name).cloned(),
+            Expression::EnumerateKeys(value) => self.static_enumerated_keys_binding(value),
             Expression::Call { callee, arguments } => {
                 if let Some(binding) =
-                    self.infer_global_builtin_array_call_binding(callee, arguments)
+                    self.static_builtin_object_array_call_binding(callee, arguments)
                 {
                     return Some(binding);
                 }
                 let Expression::Identifier(name) = callee.as_ref() else {
                     return None;
                 };
-                let user_function = if let Some(LocalFunctionBinding::User(function_name)) =
-                    self.global_function_bindings.get(name)
-                {
-                    self.user_function_map.get(function_name)
-                } else if is_internal_user_function_identifier(name) {
-                    self.user_function_map.get(name)
-                } else {
-                    None
-                }?;
+                let user_function = self.resolve_global_user_function_from_identifier(name)?;
                 let param_index = user_function.enumerated_keys_param_index?;
                 let argument = match arguments.get(param_index) {
                     Some(CallArgument::Expression(expression))
                     | Some(CallArgument::Spread(expression)) => expression,
                     None => return Some(ArrayValueBinding { values: Vec::new() }),
                 };
-                self.infer_enumerated_keys_binding(argument)
+                self.static_enumerated_keys_binding(argument)
             }
             Expression::New { callee, arguments } => {
                 let Expression::Identifier(name) = callee.as_ref() else {
                     return None;
                 };
-                let user_function = if let Some(LocalFunctionBinding::User(function_name)) =
-                    self.global_function_bindings.get(name)
-                {
-                    self.user_function_map.get(function_name)
-                } else if is_internal_user_function_identifier(name) {
-                    self.user_function_map.get(name)
-                } else {
-                    None
-                }?;
+                let user_function = self.resolve_global_user_function_from_identifier(name)?;
                 let param_index = user_function.enumerated_keys_param_index?;
                 let argument = match arguments.get(param_index) {
                     Some(CallArgument::Expression(expression))
                     | Some(CallArgument::Spread(expression)) => expression,
                     None => return Some(ArrayValueBinding { values: Vec::new() }),
                 };
-                self.infer_enumerated_keys_binding(argument)
+                self.static_enumerated_keys_binding(argument)
             }
             Expression::Array(elements) => {
                 let mut values = Vec::new();

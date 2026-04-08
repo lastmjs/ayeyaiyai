@@ -5,7 +5,9 @@ pub(in crate::backend::direct_wasm) fn statement_references_user_function(
     names: &HashSet<String>,
 ) -> bool {
     match statement {
-        Statement::Block { body } | Statement::Labeled { body, .. } => body
+        Statement::Declaration { body }
+        | Statement::Block { body }
+        | Statement::Labeled { body, .. } => body
             .iter()
             .any(|statement| statement_references_user_function(statement, names)),
         Statement::Var { value, .. } | Statement::Let { value, .. } => {

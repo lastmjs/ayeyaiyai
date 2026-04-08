@@ -258,6 +258,198 @@ fn compiles_nested_for_of_continue_outer_loop_closes_inner_only() {
 }
 
 #[test]
+fn compiles_async_generator_yield_star_sync_next_with_getter_returned_capture_slots() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-next.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-next.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var obj = {
+          get [Symbol.iterator]() {
+            return function() {
+              var log = [];
+              var nextCount = 0;
+              return {
+                name: "syncIterator",
+                get next() {
+                  return function() {
+                    log.push(arguments.length);
+                    nextCount++;
+                    if (nextCount === 1) {
+                      return {
+                        value: "next-value-1",
+                        done: false,
+                      };
+                    }
+                    return {
+                      value: "next-value-2",
+                      done: true,
+                    };
+                  };
+                },
+              };
+            };
+          },
+          get [Symbol.asyncIterator]() {
+            return null;
+          },
+        };
+
+        class C {
+          static async *gen() {
+            var value = yield* obj;
+            return value;
+          }
+        }
+
+        var iter = C.gen();
+        iter.next("first").then(first => {
+          iter.next("second").then(second => {
+            console.log(first.value, second.value);
+          });
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "next-value-1 next-value-2\n"
+    );
+}
+
+#[test]
+fn compiles_unbound_async_generator_yield_star_sync_next_sequence() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-next-unbound.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-next-unbound.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var log = [];
+        var obj = {
+          get [Symbol.iterator]() {
+            log.push({ name: "get [Symbol.iterator]", thisValue: this });
+            return function() {
+              log.push({ name: "call [Symbol.iterator]", thisValue: this, args: [...arguments] });
+              var nextCount = 0;
+              return {
+                name: "syncIterator",
+                get next() {
+                  log.push({ name: "get next", thisValue: this });
+                  return function() {
+                    log.push({ name: "call next", thisValue: this, args: [...arguments] });
+                    nextCount++;
+                    if (nextCount == 1) {
+                      return {
+                        name: "next-result-1",
+                        get value() { log.push({ name: "get next value (1)", thisValue: this }); return "next-value-1"; },
+                        get done() { log.push({ name: "get next done (1)", thisValue: this }); return false; }
+                      };
+                    }
+                    return {
+                      name: "next-result-2",
+                      get value() { log.push({ name: "get next value (2)", thisValue: this }); return "next-value-2"; },
+                      get done() { log.push({ name: "get next done (2)", thisValue: this }); return true; }
+                    };
+                  };
+                }
+              };
+            };
+          },
+          get [Symbol.asyncIterator]() {
+            log.push({ name: "get [Symbol.asyncIterator]" });
+            return null;
+          }
+        };
+
+        class C {
+          async *gen() {
+            log.push({ name: "before yield*" });
+            var value = yield* obj;
+            log.push({ name: "after yield*", value: value });
+            return "return-value";
+          }
+        }
+
+        var gen = C.prototype.gen;
+        var iter = gen();
+        iter.next("first").then(first => {
+          return iter.next("second").then(second => {
+            console.log(
+              first.value,
+              second.value,
+              second.done,
+              log.map(entry => entry.name).join("|")
+            );
+          });
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "next-value-1 return-value true before yield*|get [Symbol.asyncIterator]|get [Symbol.iterator]|call [Symbol.iterator]|get next|call next|get next done (1)|get next value (1)|call next|get next done (2)|get next value (2)|after yield*\n"
+    );
+}
+
+#[test]
 fn compiles_for_of_over_custom_iterator_breaks_and_closes() {
     let tempdir = tempdir().unwrap();
     let input = tempdir.path().join("for-of-custom-iterator-break-close.js");
@@ -959,6 +1151,46 @@ fn compiles_arrays_objects_and_member_access() {
         String::from_utf8_lossy(&run.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout), "Aye 5 3 e\n");
+}
+
+#[test]
+fn compiles_static_string_length_for_noncharacter_code_points() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("string-length-noncharacter.js");
+    let output = tempdir.path().join("string-length-noncharacter.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var prop = "a\uFFFFa";
+        console.log(prop.length, prop[1] === "\uFFFF", prop !== "aa");
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "3 true true\n");
 }
 
 #[test]
@@ -3328,6 +3560,106 @@ fn compiles_class_expression_generator_method_calls_after_lowering() {
 }
 
 #[test]
+fn compiles_class_generator_method_empty_next_result_properties() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-generator-empty-next.js");
+    let output = tempdir.path().join("class-generator-empty-next.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var result;
+        class A {
+          *foo(a) {}
+        }
+
+        result = A.prototype.foo(3).next();
+        console.log("gen-next", result.value, result.done);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "gen-next undefined true\n"
+    );
+}
+
+#[test]
+fn compiles_class_generator_method_conditional_yield_with_implicit_sent_undefined() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-generator-conditional-yield.js");
+    let output = tempdir
+        .path()
+        .join("class-generator-conditional-yield.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class A {
+          *g() { (yield 1) ? yield 2 : yield 3; }
+        }
+
+        var iter = A.prototype.g();
+        var first = iter.next();
+        var second = iter.next();
+        var third = iter.next();
+        console.log("gen-cond", first.value, first.done, second.value, second.done, third.value, third.done);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "gen-cond 1 false 3 false undefined true\n"
+    );
+}
+
+#[test]
 fn compiles_simple_generator_creation_without_eager_body_execution() {
     let tempdir = tempdir().unwrap();
     let input = tempdir.path().join("generator-deferred.js");
@@ -5668,6 +6000,8 @@ fn compiles_function_constructor_family_alias_hashbang_parse_errors() {
         const AsyncGeneratorFunction = (async function *(){}).constructor;
         for (const ctor of [Function, AsyncFunction, GeneratorFunction, AsyncGeneratorFunction]) {
           __ayyAssertThrows(SyntaxError, () => ctor('#!\n_', ''), 'call');
+          __ayyAssertThrows(SyntaxError, () => ctor('#!\n_'), 'call-body');
+          __ayyAssertThrows(SyntaxError, () => new ctor('#!\n_', ''), 'new-arg');
           __ayyAssertThrows(SyntaxError, () => new ctor('#!\n_'), 'new');
         }
         console.log("function-constructor-family-hashbang");
@@ -6134,6 +6468,38 @@ fn compiles_direct_and_indirect_eval_class_lexical_isolation() {
         String::from_utf8_lossy(&run.stderr),
     );
     assert_eq!(String::from_utf8_lossy(&run.stdout), "ok\n");
+}
+
+#[test]
+fn compiles_direct_eval_class_declaration_completion_values() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("eval-class-completion.js");
+    let output = tempdir.path().join("eval-class-completion.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        console.log(eval("class C {}") === undefined);
+        console.log(eval("1; class C {}") === 1);
+        "#,
+    )
+    .unwrap();
+
+    let options = CompileOptions {
+        output: output.clone(),
+        target: "wasm32-wasip2".to_string(),
+    };
+
+    compile_file(&input, &options).unwrap();
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "true\ntrue\n");
 }
 
 #[test]
@@ -7292,6 +7658,55 @@ fn compiles_addition_with_boxed_boolean_and_number_wrappers() {
 }
 
 #[test]
+fn compiles_boolean_builtin_calls_to_primitive_values() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("boolean-builtins.js");
+    let output = tempdir.path().join("boolean-builtins.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        console.log(
+          "boolean-call",
+          Boolean(true) === true,
+          Boolean(false) === false,
+          Boolean() === false,
+          Boolean("") === false,
+          Boolean("x") === true
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "boolean-call true true true true true\n"
+    );
+}
+
+#[test]
 fn compiles_addition_with_anonymous_function_expression_to_string() {
     let tempdir = tempdir().unwrap();
     let input = tempdir.path().join("addition-anon-fnexpr.js");
@@ -7335,6 +7750,51 @@ fn compiles_addition_with_anonymous_function_expression_to_string() {
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
         "addition-anon-fnexpr true true true\n"
+    );
+}
+
+#[test]
+fn compiles_simple_regexp_exec_no_match_to_null() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("regexp-exec-null.js");
+    let output = tempdir.path().join("regexp-exec-null.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        console.log(
+          "regexp-exec-null",
+          RegExp("0").exec("1") === null
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "regexp-exec-null true\n"
     );
 }
 
@@ -11771,6 +12231,125 @@ fn super_spread_propagates_iterator_and_reference_errors() {
 }
 
 #[test]
+fn async_super_method_body_preserves_this_binding() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("async-super-method-body.js");
+    let output = tempdir.path().join("async-super-method-body.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class A {
+          async method() {
+            return this.value;
+          }
+        }
+
+        class B extends A {
+          constructor() {
+            super();
+            this.value = "sup";
+          }
+
+          async method() {
+            var x = await super.method();
+            console.log("x", x);
+          }
+        }
+
+        new B().method().then(
+          function(value) { console.log("done", value); },
+          function(error) { console.log("err", error && error.name, "" + error); }
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "x sup\ndone undefined\n"
+    );
+}
+
+#[test]
+fn async_await_of_immediately_resolved_values_runs_without_trapping() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("async-await-immediate.js");
+    let output = tempdir.path().join("async-await-immediate.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        async function f() {
+          return "sup";
+        }
+
+        async function g() {
+          let a = await "lhs";
+          let b = await Promise.resolve("rhs");
+          let c = await f();
+          console.log(a, b, c);
+        }
+
+        g().then(
+          function(value) { console.log("done", value); },
+          function(error) { console.log("err", error && error.name, "" + error); }
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "lhs rhs sup\ndone undefined\n"
+    );
+}
+
+#[test]
 fn object_spread_keeps_symbol_values_and_own_key_order() {
     let tempdir = tempdir().unwrap();
     let input = tempdir.path().join("object-spread-symbols.js");
@@ -11887,6 +12466,425 @@ fn compiles_arrow_function_restricted_caller_and_arguments_properties() {
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
         "own false false\nthrows\n"
+    );
+}
+
+#[test]
+fn compiles_function_restricted_caller_and_arguments_properties() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("function-restricted-properties.js");
+    let output = tempdir.path().join("function-restricted-properties.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function f() {}
+
+        console.log(
+          "own",
+          f.hasOwnProperty("caller"),
+          f.hasOwnProperty("arguments")
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "own false false\n");
+}
+
+#[test]
+fn compiles_async_generator_method_next_promise_once_with_receiver_this() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("async-generator-method-next-once.js");
+    let output = tempdir.path().join("async-generator-method-next-once.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var callCount = 0;
+
+        class C {
+          async *method() {
+            console.log("own", this.method.hasOwnProperty("arguments"));
+            callCount++;
+          }
+        }
+
+        var iter = C.prototype.method();
+        console.log("created", callCount);
+        iter.next().then(function(v) {
+          console.log("done", v.done, callCount);
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "created 0\nown false\ndone true 1\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_method_next_then_chain_with_function_handler() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-method-next-then-chain-function.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-method-next-then-chain-function.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var callCount = 0;
+        function done(value) {
+          console.log("done", value === undefined ? "undefined" : value);
+        }
+
+        class C {
+          async *method() {
+            console.log("own", this.method.hasOwnProperty("caller"));
+            callCount++;
+          }
+        }
+
+        C.prototype.method().next()
+          .then(function() {
+            console.log("then1", callCount);
+          }, done)
+          .then(done, done);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "own false\nthen1 1\ndone undefined\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_rejected_yield_next_catch_chain() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-rejected-yield-next-catch-chain.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-rejected-yield-next-catch-chain.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let error = new Error("boom");
+
+        async function* gen() {
+          console.log("enter");
+          yield Promise.reject(error);
+          console.log("after");
+        }
+
+        var iter = gen();
+        iter.next()
+          .then(function() {
+            console.log("resolved");
+          })
+          .catch(function(err) {
+            console.log("caught", err === error, err.message);
+            iter.next().then(function(result) {
+              console.log("next2", result.done, result.value);
+            });
+          });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "enter\ncaught true undefined\nnext2 true undefined\n"
+    );
+}
+
+#[test]
+fn compiles_for_await_async_generator_rejection_then_completion() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("for-await-async-generator-rejection-then-completion.js");
+    let output = tempdir
+        .path()
+        .join("for-await-async-generator-rejection-then-completion.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let error = new Error("boom");
+
+        async function* readFile() {
+          yield Promise.reject(error);
+          yield "unreachable";
+        }
+
+        class C {
+          async *gen() {
+            for await (let line of readFile()) {
+              yield line;
+            }
+            console.log("after");
+          }
+        }
+
+        var iter = C.prototype.gen();
+        iter.next().then(
+          function() {
+            throw new Error("resolved");
+          },
+          function(rejectValue) {
+            console.log("caught", rejectValue === error, rejectValue.message);
+            iter.next().then(function({done, value}) {
+              console.log("next2", done, value);
+            });
+          }
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "caught true undefined\nnext2 true undefined\n"
+    );
+}
+
+#[test]
+fn compiles_for_await_sync_iterable_rejection_then_completion() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("for-await-sync-iterable-rejection-then-completion.js");
+    let output = tempdir
+        .path()
+        .join("for-await-sync-iterable-rejection-then-completion.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let error = new Error("boom");
+        let iterable = [
+          Promise.reject(error),
+          "unreachable"
+        ];
+
+        class C {
+          async *gen() {
+            for await (let value of iterable) {
+              yield value;
+            }
+            console.log("after");
+          }
+        }
+
+        var iter = C.prototype.gen();
+        iter.next().then(
+          function() {
+            throw new Error("resolved");
+          },
+          function(rejectValue) {
+            console.log("caught", rejectValue === error, rejectValue.message);
+            iter.next().then(function({done, value}) {
+              console.log("next2", done, value);
+            });
+          }
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "caught true undefined\nnext2 true undefined\n"
+    );
+}
+
+#[test]
+fn compiles_direct_function_expression_object_destructuring_call() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("direct-function-expression-object-destructuring-call.js");
+    let output = tempdir
+        .path()
+        .join("direct-function-expression-object-destructuring-call.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        (function({done, value}) {
+          console.log("direct", done, value);
+        })({done: true, value: undefined});
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "direct true undefined\n"
     );
 }
 
@@ -12382,6 +13380,131 @@ fn compiles_arrow_default_destructuring_with_array_prototype_iterator_override()
 }
 
 #[test]
+fn compiles_class_method_destructuring_with_array_prototype_iterator_override() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-method-destructuring-array-prototype-iterator.js");
+    let output = tempdir
+        .path()
+        .join("class-method-destructuring-array-prototype-iterator.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        Array.prototype[Symbol.iterator] = function* () {
+          if (this.length > 0) {
+            yield this[0];
+          }
+          if (this.length > 1) {
+            yield this[1];
+          }
+          if (this.length > 2) {
+            yield 42;
+          }
+        };
+
+        class C {
+          method([x, y, z]) {
+            console.log("vals", x, y, z);
+          }
+        }
+
+        new C().method([1, 2, 3]);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "vals 1 2 42\n");
+}
+
+#[test]
+fn compiles_class_async_generator_destructuring_with_array_prototype_iterator_override() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-async-generator-array-prototype-iterator.js");
+    let output = tempdir
+        .path()
+        .join("class-async-generator-array-prototype-iterator.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        Array.prototype[Symbol.iterator] = function* () {
+          if (this.length > 0) {
+            yield this[0];
+          }
+          if (this.length > 1) {
+            yield this[1];
+          }
+          if (this.length > 2) {
+            yield 42;
+          }
+        };
+
+        class C {
+          async *method([x, y, z]) {
+            console.log("vals", x, y, z);
+          }
+        }
+
+        let iterator = new C().method([1, 2, 3]);
+        iterator.next().then(function () {
+          console.log("done");
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "vals 1 2 42\ndone\n");
+}
+
+#[test]
 fn compiles_arrow_elision_over_throwing_generator_iterators() {
     let tempdir = tempdir().unwrap();
     let input = tempdir
@@ -12553,5 +13676,2013 @@ fn compiles_nested_array_destructuring_default_class_names() {
     assert_eq!(
         String::from_utf8_lossy(&run.stdout),
         "checks true true true function\ncount 1\n"
+    );
+}
+
+#[test]
+fn compiles_captured_class_static_async_generator_default_throw() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("captured-class-static-async-generator-default-throw.js");
+    let output = tempdir
+        .path()
+        .join("captured-class-static-async-generator-default-throw.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var callCount = 0;
+
+        class C {
+          static async *method(_ = (function() { throw 1; }())) {
+            callCount = callCount + 1;
+          }
+        }
+
+        function invoke() {
+          C.method();
+        }
+
+        invoke();
+        console.log("after", callCount, typeof C.prototype, typeof C.method);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "after 0 object function\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_sync_iterator_typeerror_rejection() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-sync-iterator-typeerror-rejection.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-sync-iterator-typeerror-rejection.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var obj = {
+          [Symbol.iterator]: {}
+        };
+
+        class C {
+          static async *gen() {
+            yield* obj;
+          }
+        }
+
+        var iter = C.gen();
+        iter.next().then(
+          function() { console.log("fulfilled"); },
+          function(err) { console.log("rejected", err.constructor === TypeError); }
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "rejected true\n");
+}
+
+#[test]
+fn compiles_function_prototype_call_results_with_returned_getter_objects() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("function-prototype-call-returned-getter-object.js");
+    let output = tempdir
+        .path()
+        .join("function-prototype-call-returned-getter-object.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var nextCount = 0;
+        var iter = {
+          get next() {
+            return function() {
+              nextCount += 1;
+              return {
+                get value() {
+                  return "x";
+                },
+                get done() {
+                  return false;
+                }
+              };
+            };
+          }
+        };
+
+        var next = iter.next;
+        var step = next.call(iter, "ignored");
+        console.log("closure-call", step.value === "x", step.done === false, nextCount);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "closure-call true true 1\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_yield_star_sync_iterator_next_with_getter_results() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-iterator-next-getters.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-iterator-next-getters.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var log = [];
+        var obj = {
+          get [Symbol.iterator]() {
+            log.push("get-iter");
+            return function() {
+              return {
+                get next() {
+                  log.push("get-next");
+                  return function() {
+                    return {
+                      get value() {
+                        log.push("get-value");
+                        return "next-value-1";
+                      },
+                      get done() {
+                        log.push("get-done");
+                        return false;
+                      }
+                    };
+                  };
+                }
+              };
+            };
+          },
+          get [Symbol.asyncIterator]() {
+            log.push("get-async");
+            return null;
+          }
+        };
+
+        class C {
+          static async *gen() {
+            yield* obj;
+          }
+        }
+
+        var iter = C.gen();
+        iter.next().then(function(v) {
+          console.log("yield-star", v.value, v.done, log.length);
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "yield-star next-value-1 false 5\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_yield_star_async_iterator_next_callback() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-next.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-next.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var log = [];
+        var obj = {
+          [Symbol.asyncIterator]() {
+            return {
+              get next() {
+                log.push("get next");
+                return function() {
+                  log.push("call next");
+                  return { value: "next-value-1", done: false };
+                };
+              }
+            };
+          }
+        };
+
+        class C {
+          async *gen() {
+            log.push("before yield*");
+            yield* obj;
+          }
+        }
+
+        var iter = C.prototype.gen();
+        console.log("start");
+        iter.next().then(function(v) {
+          console.log("next", v.value, v.done, log.length);
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "start\nnext next-value-1 false 3\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_yield_star_async_iterator_return_callback() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-return.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-return.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var log = [];
+        var obj = {
+          [Symbol.asyncIterator]() {
+            var returnCount = 0;
+            return {
+              get next() {
+                log.push("get next");
+                return function() {
+                  return { value: "next-value-1", done: false };
+                };
+              },
+              get return() {
+                log.push("get return");
+                return function(arg) {
+                  log.push("call return:" + arg);
+                  returnCount++;
+                  if (returnCount === 1) {
+                    return {
+                      get then() {
+                        log.push("get return then (1)");
+                        return function(resolve) {
+                          log.push("call return then (1)");
+                          resolve({
+                            get value() {
+                              log.push("get return value (1)");
+                              return "return-value-1";
+                            },
+                            get done() {
+                              log.push("get return done (1)");
+                              return false;
+                            }
+                          });
+                        };
+                      }
+                    };
+                  }
+                  return {
+                    get then() {
+                      log.push("get return then (2)");
+                      return function(resolve) {
+                        log.push("call return then (2)");
+                        resolve({
+                          get value() {
+                            log.push("get return value (2)");
+                            return "return-value-2";
+                          },
+                          get done() {
+                            log.push("get return done (2)");
+                            return true;
+                          }
+                        });
+                      };
+                    }
+                  };
+                };
+              }
+            };
+          }
+        };
+
+        class C {
+          async *gen() {
+            log.push("before yield*");
+            yield* obj;
+          }
+        }
+
+        var iter = C.prototype.gen();
+        console.log("start");
+        iter.next().then(function(v) {
+          console.log("next", v.value, v.done, log.length);
+          iter.return("return-arg-1").then(function(v2) {
+            console.log("return1", v2.value, v2.done, log.length);
+            iter.return("return-arg-2").then(function(v3) {
+              console.log("return2", v3.value, v3.done, log.length);
+            });
+          });
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "start\nnext next-value-1 false 2\nreturn1 return-value-1 false 8\nreturn2 return-value-2 true 14\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_yield_star_sync_iterator_return_same_value_callback() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-iterator-return-same-value.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-sync-iterator-return-same-value.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function sameValue(left, right, message) {
+          if (left === right) {
+            return;
+          }
+          if (left !== left && right !== right) {
+            return;
+          }
+          throw new Error(message);
+        }
+
+        var log = [];
+        var obj = {
+          [Symbol.iterator]() {
+            var returnCount = 0;
+            return {
+              name: "syncIterator",
+              get next() {
+                log.push({ name: "get next" });
+                return function() {
+                  return { value: "next-value-1", done: false };
+                };
+              },
+              get return() {
+                log.push({ name: "get return", thisValue: this });
+                return function() {
+                  log.push({
+                    name: "call return",
+                    thisValue: this,
+                    args: [...arguments]
+                  });
+                  returnCount++;
+                  if (returnCount === 1) {
+                    return {
+                      name: "return-result-1",
+                      get value() {
+                        log.push({ name: "get return value (1)", thisValue: this });
+                        return "return-value-1";
+                      },
+                      get done() {
+                        log.push({ name: "get return done (1)", thisValue: this });
+                        return false;
+                      }
+                    };
+                  }
+                  return {
+                    name: "return-result-2",
+                    get value() {
+                      log.push({ name: "get return value (2)", thisValue: this });
+                      return "return-value-2";
+                    },
+                    get done() {
+                      log.push({ name: "get return done (2)", thisValue: this });
+                      return true;
+                    }
+                  };
+                };
+              }
+            };
+          }
+        };
+
+        class C {
+          async *gen() {
+            log.push({ name: "before yield*" });
+            yield* obj;
+          }
+        }
+
+        var iter = C.prototype.gen();
+        iter.next().then(function(v) {
+          sameValue(v.value, "next-value-1", "next value");
+          sameValue(v.done, false, "next done");
+          iter.return("return-arg-1").then(function(v2) {
+            sameValue(v2.value, "return-value-1", "return1 value");
+            sameValue(v2.done, false, "return1 done");
+            iter.return().then(function(v3) {
+              console.log("pre", log[7].args[0] === undefined);
+              sameValue(log[7].args[0], undefined, "return args[0]");
+              console.log("done", v3.value, v3.done, log.length);
+            });
+          });
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "pre true\ndone return-value-2 true 10\n"
+    );
+}
+
+#[test]
+fn compiles_async_generator_yield_star_async_iterator_throw_callback() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-throw.js");
+    let output = tempdir
+        .path()
+        .join("async-generator-yield-star-async-iterator-throw.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var log = [];
+        var obj = {
+          [Symbol.asyncIterator]() {
+            var throwCount = 0;
+            return {
+              get next() {
+                log.push("get next");
+                return function() {
+                  return { value: "next-value-1", done: false };
+                };
+              },
+              get throw() {
+                log.push("get throw");
+                return function(arg) {
+                  log.push("call throw:" + arg);
+                  throwCount++;
+                  if (throwCount === 1) {
+                    return {
+                      get then() {
+                        log.push("get throw then (1)");
+                        return function(resolve) {
+                          log.push("call throw then (1)");
+                          resolve({
+                            get value() {
+                              log.push("get throw value (1)");
+                              return "throw-value-1";
+                            },
+                            get done() {
+                              log.push("get throw done (1)");
+                              return false;
+                            }
+                          });
+                        };
+                      }
+                    };
+                  }
+                  return {
+                    get then() {
+                      log.push("get throw then (2)");
+                      return function(resolve) {
+                        log.push("call throw then (2)");
+                        resolve({
+                          get value() {
+                            log.push("get throw value (2)");
+                            return "throw-value-2";
+                          },
+                          get done() {
+                            log.push("get throw done (2)");
+                            return true;
+                          }
+                        });
+                      };
+                    }
+                  };
+                };
+              }
+            };
+          }
+        };
+
+        class C {
+          async *gen() {
+            log.push("before yield*");
+            var v = yield* obj;
+            log.push("after yield*:" + v);
+            return "return-value";
+          }
+        }
+
+        var iter = C.prototype.gen();
+        console.log("start");
+        iter.next().then(function(v) {
+          console.log("next", v.value, v.done, log.length);
+          iter.throw("throw-arg-1").then(function(v2) {
+            console.log("throw1", v2.value, v2.done, log.length);
+            iter.throw("throw-arg-2").then(function(v3) {
+              console.log("throw2", v3.value, v3.done, log.length, log[14]);
+            });
+          });
+        });
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "start\nnext next-value-1 false 2\nthrow1 throw-value-1 false 8\nthrow2 return-value true 15 after yield*:throw-value-2\n"
+    );
+}
+
+#[test]
+fn compiles_class_field_computed_name_abrupt_completion() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-field-computed-name-abrupt.js");
+    let output = tempdir.path().join("class-field-computed-name-abrupt.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function f() {
+          throw "boom";
+        }
+
+        let caught = false;
+        try {
+          class C {
+            [f()]
+          }
+        } catch (error) {
+          caught = true;
+        }
+
+        console.log(caught);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "true\n");
+}
+
+#[test]
+fn compiles_class_accessor_computed_numeric_name() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-accessor-computed-numeric-name.js");
+    let output = tempdir
+        .path()
+        .join("class-accessor-computed-numeric-name.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class C {
+          get [1 + 1]() {
+            return 2;
+          }
+
+          set [1 + 1](v) {
+            return 2;
+          }
+
+          static get [1 + 1]() {
+            return 2;
+          }
+
+          static set [1 + 1](v) {
+            return 2;
+          }
+
+          get [1 - 1]() {
+            return 0;
+          }
+
+          set [1 - 1](v) {
+            return 0;
+          }
+
+          static get [1 - 1]() {
+            return 0;
+          }
+
+          static set [1 - 1](v) {
+            return 0;
+          }
+        }
+
+        let c = new C();
+        console.log(
+          c[2], c[2] = 2, C[2], C[2] = 2,
+          c[String(1 + 1)], c[String(1 + 1)] = 2, C[String(1 + 1)], C[String(1 + 1)] = 2,
+          c[0], c[0] = 0, C[0], C[0] = 0,
+          c[String(1 - 1)], c[String(1 - 1)] = 0, C[String(1 - 1)], C[String(1 - 1)] = 0
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "2 2 2 2 2 2 2 2 0 0 0 0 0 0 0 0\n",
+    );
+}
+
+#[test]
+fn compiles_class_static_numeric_super_member_access() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-static-numeric-super-member-access.js");
+    let output = tempdir
+        .path()
+        .join("class-static-numeric-super-member-access.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class B {
+          static 4() { return 4; }
+          static get 5() { return 5; }
+        }
+
+        class C extends B {
+          static 4() { return super[4](); }
+          static get 5() { return super[5]; }
+        }
+
+        console.log(C[4](), C[5]);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "4 5\n");
+}
+
+#[test]
+fn compiles_class_accessor_descriptor_shape() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-accessor-descriptor-shape.js");
+    let output = tempdir.path().join("class-accessor-descriptor-shape.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function logDescriptorShape(object, name) {
+          var desc = Object.getOwnPropertyDescriptor(object, name);
+          console.log(
+            desc.configurable | 0,
+            desc.enumerable | 0,
+            typeof desc.get,
+            typeof desc.set,
+            ('prototype' in desc.get) | 0,
+            ('prototype' in desc.set) | 0
+          );
+        }
+
+        class C {
+          get x() { return this._x; }
+          set x(v) { this._x = v; }
+          static get staticX() { return this._x; }
+          static set staticX(v) { this._x = v; }
+        }
+
+        logDescriptorShape(C.prototype, "x");
+        logDescriptorShape(C, "staticX");
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "1 0 function function 0 0\n1 0 function function 0 0\n",
+    );
+}
+
+#[test]
+fn compiles_verify_property_like_class_setter_descriptor_checks() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("verify-property-like-class-setter-descriptor-checks.js");
+    let output = tempdir
+        .path()
+        .join("verify-property-like-class-setter-descriptor-checks.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function Test262Error(message) {
+          this.name = "Test262Error";
+          this.message = message ?? "";
+        }
+
+        var __getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+        var __getOwnPropertyNames = Object.getOwnPropertyNames;
+        var __hasOwnProperty = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
+
+        function verifyProperty(obj, name, expected) {
+          var originalDesc = __getOwnPropertyDescriptor(obj, name);
+          var names = __getOwnPropertyNames(expected);
+          if (names.length !== 1 || names[0] !== "enumerable") throw 1;
+          return originalDesc;
+        }
+
+        function assertSetterDescriptor(object, name) {
+          var desc = verifyProperty(object, name, {
+            enumerable: false
+          });
+          console.log(
+            typeof desc.set,
+            ("prototype" in desc.set) | 0,
+            desc.get === undefined
+          );
+        }
+
+        class C {
+          set x(v) { this._x = v; }
+        }
+
+        assertSetterDescriptor(C.prototype, "x");
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "function 0 true\n");
+}
+
+#[test]
+fn compiles_class_prototype_property_descriptor_shape() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-prototype-property-descriptor-shape.js");
+    let output = tempdir
+        .path()
+        .join("class-prototype-property-descriptor-shape.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class C {}
+        var descr = Object.getOwnPropertyDescriptor(C, "prototype");
+        console.log(
+          (descr.configurable === false) | 0,
+          (descr.enumerable === false) | 0,
+          (descr.writable === false) | 0,
+          (descr.value === C.prototype) | 0
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1 1 1 1\n");
+}
+
+#[test]
+fn compiles_derived_class_super_constructor_prototype_wiring() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("derived-class-super-constructor-wiring.js");
+    let output = tempdir
+        .path()
+        .join("derived-class-super-constructor-wiring.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class Base {
+          constructor(x) {
+            this.foobar = x;
+          }
+        }
+
+        class Subclass extends Base {
+          constructor(x) {
+            super(x);
+          }
+        }
+
+        let callType = false;
+        try {
+          Subclass(1);
+        } catch (error) {
+          callType = error.constructor === TypeError;
+        }
+
+        let s = new Subclass(1);
+        console.log(s.foobar, Object.getPrototypeOf(s) === Subclass.prototype, callType);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1 true true\n");
+}
+
+#[test]
+fn compiles_derived_class_super_constructor_with_builtin_object() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("derived-class-super-constructor-builtin-object.js");
+    let output = tempdir
+        .path()
+        .join("derived-class-super-constructor-builtin-object.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        class C extends Object {
+          constructor() {
+            'use strict';
+            super();
+          }
+        }
+
+        let c = new C();
+        console.log(typeof c, Object.getPrototypeOf(c) === C.prototype);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "object true\n");
+}
+
+fn compiles_class_accessor_computed_yield_name_through_done_loop() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-accessor-computed-yield-name-done-loop.js");
+    let output = tempdir
+        .path()
+        .join("class-accessor-computed-yield-name-done-loop.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var inst = "unset";
+        var stat = "unset";
+
+        function * g() {
+          class C {
+            get [yield 9]() {
+              return 9;
+            }
+
+            static get [yield 9]() {
+              return 9;
+            }
+          }
+
+          let c = new C();
+          inst = c[yield 9];
+          stat = C[yield 9];
+        }
+
+        let iter = g();
+        while (iter.next().done === false) {}
+        console.log(inst, stat);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "9 9\n");
+}
+
+#[test]
+fn compiles_class_expression_computed_field_name_from_additive_expression() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-expression-computed-field-name-additive.js");
+    let output = tempdir
+        .path()
+        .join("class-expression-computed-field-name-additive.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let C = class {
+          [1 + 1] = 2;
+          static [1 + 1] = 2;
+        };
+
+        let c = new C();
+        console.log(c[2], C[2]);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "2 2\n");
+}
+
+#[test]
+fn compiles_named_class_expression_typeof_and_name_without_self_alias_recursion() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("named-class-expression-typeof-name.js");
+    let output = tempdir
+        .path()
+        .join("named-class-expression-typeof-name.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var C = class C {};
+        console.log(typeof C, C.name);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "function C\n");
+}
+
+#[test]
+fn compiles_named_class_expression_function_prototype_identity() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-expr-prototype.js");
+    let output = tempdir.path().join("class-expr-prototype.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var C = class C {};
+        console.log(
+          typeof Object.getPrototypeOf(C),
+          Object.getPrototypeOf(C) === Function.prototype
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "object true\n");
+}
+
+#[test]
+fn compiles_class_extends_side_effects_constructor_prototype_wiring() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-extends-side-effects.js");
+    let output = tempdir.path().join("class-extends-side-effects.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var calls = 0;
+        class C {}
+        class D extends (calls++, C) {}
+        console.log(
+          calls,
+          Object.getPrototypeOf(D) === C,
+          Object.getPrototypeOf(D.prototype) === C.prototype
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1 true true\n");
+}
+
+#[test]
+fn compiles_test262_assert_samevalue_for_class_extends_side_effects() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("test262-class-extends-side-effects-samevalue.js");
+    let output = tempdir
+        .path()
+        .join("test262-class-extends-side-effects-samevalue.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function Test262Error(message) {
+          this.name = "Test262Error";
+          this.message = message ?? "";
+        }
+
+        function __sameValue(left, right) {
+          if (left === right) {
+            return left !== 0 || 1 / left === 1 / right;
+          }
+          return left !== left && right !== right;
+        }
+
+        function __assertSameValue(actual, expected, message) {
+          if (__sameValue(actual, expected)) {
+            return;
+          }
+          throw new Test262Error(message ?? "sameValue");
+        }
+
+        function $DONE(error) {
+          if (error !== undefined) {
+            throw error;
+          }
+        }
+
+        var calls = 0;
+        class C {}
+        class D extends (calls++, C) {}
+        __assertSameValue(calls, 1, "calls");
+        __assertSameValue(typeof D, "function", "typeof");
+        __assertSameValue(Object.getPrototypeOf(D), C, "ctor proto");
+        __assertSameValue(
+          C.prototype,
+          Object.getPrototypeOf(D.prototype),
+          "instance proto"
+        );
+        console.log("ok");
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ok\n");
+}
+
+#[test]
+fn compiles_test262_assert_samevalue_for_caught_second_super_side_effects() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-second-super-assert-samevalue.js");
+    let output = tempdir
+        .path()
+        .join("class-second-super-assert-samevalue.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        function __assertSameValue(actual, expected, message) {
+          if (actual !== expected) {
+            throw new Error(message || "sameValue");
+          }
+        }
+
+        class Base {
+          constructor(a, b) {
+            var o = new Object();
+            o.prp = a + b;
+            return o;
+          }
+        }
+
+        class Subclass2 extends Base {
+          constructor(x) {
+            super(1, 2);
+            if (x < 0) return;
+            var called = false;
+            function tmp() {
+              called = true;
+              return 3;
+            }
+            var exn = null;
+            try {
+              super(tmp(), 4);
+            } catch (e) {
+              exn = e;
+            }
+            __assertSameValue(exn instanceof ReferenceError, true, "exn");
+            __assertSameValue(called, true, "called");
+          }
+        }
+
+        var s2 = new Subclass2(1);
+        __assertSameValue(s2.prp, 3, "s2.prp");
+        var s3 = new Subclass2(-1);
+        __assertSameValue(s3.prp, 3, "s3.prp");
+        console.log("ok");
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "ok\n");
+}
+
+#[test]
+fn compiles_class_expression_computed_field_name_from_logical_and_assignment() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-expression-computed-field-name-logical-and.js");
+    let output = tempdir
+        .path()
+        .join("class-expression-computed-field-name-logical-and.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let x = 0;
+        let C = class {
+          [x &&= 1] = 2;
+          static [x &&= 1] = 2;
+        };
+
+        let c = new C();
+        console.log(x, c[0], C[0], c[String(0)], C[String(0)]);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "0 2 2 2 2\n");
+}
+
+#[test]
+fn compiles_class_expression_computed_field_name_from_identifier() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-expression-computed-field-name-identifier.js");
+    let output = tempdir
+        .path()
+        .join("class-expression-computed-field-name-identifier.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let x = 1;
+        let C = class {
+          [x] = '2';
+          static [x] = '2';
+        };
+
+        let c = new C();
+        console.log(
+          typeof c[x], c[x],
+          typeof C[x], C[x],
+          typeof c[String(x)], c[String(x)],
+          typeof C[String(x)], C[String(x)]
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "string 2 string 2 string 2 string 2\n"
+    );
+}
+
+#[test]
+fn compiles_class_expression_computed_field_name_from_yield_expression() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("class-expression-computed-field-name-yield.js");
+    let output = tempdir
+        .path()
+        .join("class-expression-computed-field-name-yield.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        let r1;
+        let r2;
+        let r3;
+        let r4;
+
+        function * g() {
+          let C = class {
+            [yield 9] = 9;
+            static [yield 9] = 9;
+          };
+
+          let c = new C();
+          r1 = c[yield 9];
+          r2 = C[yield 9];
+          r3 = c[String(yield 9)];
+          r4 = C[String(yield 9)];
+        }
+
+        let iter = g();
+        while (iter.next().done === false) {}
+        console.log(r1, r2, r3, r4);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "9 9 9 9\n");
+}
+
+#[test]
+fn compiles_class_function_name_and_length_precedence() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("class-function-name-and-length.js");
+    let output = tempdir.path().join("class-function-name-and-length.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var namedSym = Symbol('test262');
+        var anonSym = Symbol();
+        var isDefined = false;
+
+        class A {
+          get id() {}
+          get [anonSym]() {}
+          get [namedSym]() {}
+          set id(_) {}
+          *gen() {}
+          static get length() {
+            if (isDefined) return 'pass';
+            throw new Error('getter executed during definition');
+          }
+          static *name() {}
+        }
+
+        isDefined = true;
+
+        var getter = Object.getOwnPropertyDescriptor(A.prototype, 'id').get;
+        var anonGetter = Object.getOwnPropertyDescriptor(A.prototype, anonSym).get;
+        var namedGetter = Object.getOwnPropertyDescriptor(A.prototype, namedSym).get;
+        var setter = Object.getOwnPropertyDescriptor(A.prototype, 'id').set;
+
+        console.log(
+          A.length,
+          typeof A.name,
+          getter.name,
+          JSON.stringify(anonGetter.name),
+          namedGetter.name,
+          setter.name,
+          A.prototype.gen.name
+        );
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "pass function get id \"get \" get [test262] set id gen\n"
+    );
+}
+
+#[test]
+fn compiles_json_stringify_string_primitive() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("json-stringify-string.js");
+    let output = tempdir.path().join("json-stringify-string.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        console.log(JSON.stringify("x"), JSON.stringify(undefined), JSON.stringify(null));
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "\"x\" undefined null\n"
+    );
+}
+
+#[test]
+fn compiles_bound_function_prototype_call_helpers() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir
+        .path()
+        .join("bound-function-prototype-call-helpers.js");
+    let output = tempdir
+        .path()
+        .join("bound-function-prototype-call-helpers.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var __join = Function.prototype.call.bind(Array.prototype.join);
+        var __push = Function.prototype.call.bind(Array.prototype.push);
+        var __hasOwnProperty = Function.prototype.call.bind(Object.prototype.hasOwnProperty);
+        var __propertyIsEnumerable = Function.prototype.call.bind(Object.prototype.propertyIsEnumerable);
+
+        var failures = [];
+        console.log(__push(failures, "x"), failures.length, failures[0]);
+        console.log(__join(["a", "b"], ","), __join(failures, "; "));
+
+        var obj = { x: 1 };
+        console.log(__hasOwnProperty(obj, "x"), __hasOwnProperty(obj, "y"));
+        console.log(__propertyIsEnumerable(obj, "x"), __propertyIsEnumerable(obj, "toString"));
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "1 1 x\na,b x\ntrue false\ntrue false\n"
+    );
+}
+
+#[test]
+fn compiles_symbol_parameter_descriptor_reads_through_inlined_call_frame() {
+    let tempdir = tempdir().unwrap();
+    let input = tempdir.path().join("symbol-parameter-descriptor-reads.js");
+    let output = tempdir
+        .path()
+        .join("symbol-parameter-descriptor-reads.wasm");
+
+    fs::write(
+        &input,
+        r#"
+        var anonSym = Symbol();
+        var namedSym = Symbol('test262');
+        class A {
+          get [anonSym]() {}
+          get [namedSym]() {}
+        }
+
+        function probe(target, key) {
+          var getter = Object.getOwnPropertyDescriptor(target, key).get;
+          console.log(typeof getter, getter.name);
+        }
+
+        probe(A.prototype, anonSym);
+        probe(A.prototype, namedSym);
+        "#,
+    )
+    .unwrap();
+
+    let compile = Command::new(env!("CARGO_BIN_EXE_ayeyaiyai"))
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(
+        compile.status.success(),
+        "compiler failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&compile.stdout),
+        String::from_utf8_lossy(&compile.stderr),
+    );
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+
+    assert!(
+        run.status.success(),
+        "wasmtime failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr),
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout),
+        "function get \nfunction get [test262]\n"
     );
 }

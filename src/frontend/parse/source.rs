@@ -3,7 +3,7 @@ use std::{borrow::Cow, fs, path::Path};
 use anyhow::{Context, Result, bail};
 use swc_common::{FileName, SourceMap, sync::Lrc};
 use swc_ecma_ast::{Module, Program as SwcProgram};
-use swc_ecma_parser::{Parser, StringInput, Syntax, lexer::Lexer};
+use swc_ecma_parser::{EsSyntax, Parser, StringInput, Syntax, lexer::Lexer};
 
 use super::{await_rewrite::rewrite_script_await_identifiers, validation::*};
 
@@ -84,7 +84,7 @@ fn normalize_leading_hashbang_comment(source: &str) -> Cow<'_, str> {
 
 fn parse_script(file: &swc_common::SourceFile) -> Result<SwcProgram> {
     let lexer = Lexer::new(
-        Syntax::Es(Default::default()),
+        script_syntax(),
         Default::default(),
         StringInput::from(file),
         None,
@@ -102,7 +102,7 @@ fn parse_script(file: &swc_common::SourceFile) -> Result<SwcProgram> {
 
 fn parse_module(file: &swc_common::SourceFile) -> Result<SwcProgram> {
     let lexer = Lexer::new(
-        Syntax::Es(Default::default()),
+        script_syntax(),
         Default::default(),
         StringInput::from(file),
         None,
@@ -124,4 +124,12 @@ fn parse_script_file_once(path: &Path, source: &str) -> Result<swc_ecma_ast::Scr
         unreachable!("parse_script must return a script");
     };
     Ok(script)
+}
+
+fn script_syntax() -> Syntax {
+    Syntax::Es(EsSyntax {
+        decorators: true,
+        decorators_before_export: true,
+        ..Default::default()
+    })
 }

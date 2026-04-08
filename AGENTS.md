@@ -28,7 +28,13 @@ Then immediately in `test262-language-progress.md`:
 
 - mark that exact test line with `[x]`
 - immediately after `[x]`, insert an ISO 8601 timestamp with date and time down to the second in parentheses, before the test path text, for example: `[x] (2026-03-19T22:24:05-06:00) test/language/...`
+- work on any individual checkbox for at most 1 hour; if it is still not fixed and passing through the direct JS->Wasm backend at that point, skip it and move on
+- mark a skipped checkbox by leaving it unchecked and inserting a skip marker in the parentheses immediately after `[ ]` using an ISO 8601 timestamp, for example: `[ ] (SKIPPED 2026-03-19T23:24:05-06:00 after 1h) test/language/...`
+- when choosing the next test to work on, ignore unchecked entries that already carry a `SKIPPED` marker and proceed to the next unchecked unskipped test
+- skipped entries do not count as completed, do not change the completed/total counts, and do not participate in the rolling average calculation
 - update the top progress line so it still contains `x/y (z%)` and then appends the rolling average time per completed checkbox over the last 10 completed checkboxes, expressed in minutes; for example: `45/23637 (0.19%) — avg(last 10): 3.42 min/check`
+- immediately below that top progress line, maintain a `Sub-category progress` block at the top of `test262-language-progress.md` that lists every top-level `test/language` sub-category in tracker order, each showing `completed/total (percent%)`
+- refresh the overall top progress line and every sub-category progress line every time any checkbox changes, so overall language completion and each sub-category completion are visible at a glance without scrolling
 - compute that rolling average from the timestamps on the 10 most recently completed checked entries in `test262-language-progress.md`; if fewer than 10 timestamped checked entries exist, use all currently timestamped checked entries after the first timestamp and compute the average elapsed minutes between consecutive completions
 - every time you add a new completion timestamp, recompute and refresh that rolling average on the top line immediately
 - proceed to the next unchecked test

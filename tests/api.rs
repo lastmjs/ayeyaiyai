@@ -50,11 +50,11 @@ fn compile_file_accepts_numeric_functions_on_the_direct_wasm_path() {
 }
 
 #[test]
-fn rejects_module_goal_sources_without_module_support() {
+fn compiles_module_goal_sources_on_the_direct_wasm_path() {
     let tempdir = tempfile::tempdir().unwrap();
     let output = tempdir.path().join("module.wasm");
     let options = CompileOptions {
-        output,
+        output: output.clone(),
         target: "wasm32-wasip2".to_string(),
     };
 
@@ -66,7 +66,15 @@ fn rejects_module_goal_sources_without_module_support() {
         &options,
         true,
     )
-    .expect_err("module goals are not yet supported by direct wasm backend");
+    .unwrap();
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "1\n");
 }
 
 #[test]
@@ -405,7 +413,7 @@ fn compile_file_executes_labeled_for_of_current_loop_continue_closes_iterator() 
 }
 
 #[test]
-fn compiles_module_goal_files_with_real_paths_fails_directly() {
+fn compiles_module_goal_files_with_real_paths() {
     let tempdir = tempfile::tempdir().unwrap();
     let input = tempdir.path().join("module.js");
     let output = tempdir.path().join("module.wasm");
@@ -418,12 +426,19 @@ fn compiles_module_goal_files_with_real_paths_fails_directly() {
     )
     .unwrap();
     let options = CompileOptions {
-        output,
+        output: output.clone(),
         target: "wasm32-wasip2".to_string(),
     };
 
-    compile_file_with_goal(&input, &options, true)
-        .expect_err("module goals are not yet supported by direct wasm backend");
+    compile_file_with_goal(&input, &options, true).unwrap();
+
+    let run = Command::new("wasmtime").arg(&output).output().unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
 }
 
 #[test]

@@ -459,6 +459,7 @@ impl ModuleLinker {
             mapped_arguments: false,
             strict: true,
             lexical_this: false,
+            derived_constructor: false,
             length: dependency_params.len() + 1,
         });
 

@@ -15,17 +15,27 @@ use tempfile::tempdir;
 use walkdir::WalkDir;
 
 const ASSERT_PRELUDE: &str = r#"
-    var assert = globalThis.assert || {};
-    globalThis.assert = assert;
+function Test262Error(message) {
+  this.name = "Test262Error";
+  this.message = message ?? "";
+}
 
-    function __ayyFail(message) {
-      throw message;
-    }
-
-    function __assert(condition, message) {
-      if (!condition) {
-        __ayyFail(message ?? "assert");
+function __formatIdentityFreeValue(value) {
+  switch (value === null ? "null" : typeof value) {
+    case "string":
+      return typeof JSON !== "undefined" ? JSON.stringify(value) : "\"" + value + "\"";
+    case "bigint":
+      return String(value) + "n";
+    case "number":
+      if (value === 0 && 1 / value === -Infinity) {
+        return "-0";
       }
+      return String(value);
+    case "boolean":
+    case "undefined":
+    case "null":
+      return String(value);
+  }
 }
 
 function __sameValue(left, right) {
@@ -35,43 +45,107 @@ function __sameValue(left, right) {
   return left !== left && right !== right;
 }
 
-function __assertSameValue(actual, expected, message) {
-  if (!__sameValue(actual, expected)) {
-    __ayyFail(message ?? "sameValue");
+function __assertToString(value) {
+  var basic = __formatIdentityFreeValue(value);
+  if (basic) {
+    return basic;
   }
+  try {
+    return String(value);
+  } catch (error) {
+    if (error && error.name === "TypeError") {
+      return Object.prototype.toString.call(value);
+    }
+    throw error;
+  }
+}
+
+function assert(mustBeTrue, message) {
+  if (mustBeTrue === true) {
+    return;
+  }
+  if (message === undefined) {
+    message = "Expected true but got " + __assertToString(mustBeTrue);
+  }
+  throw new Test262Error(message);
+}
+
+globalThis.assert = assert;
+
+function __assert(condition, message) {
+  assert(condition, message);
+}
+
+function __assertSameValue(actual, expected, message) {
+  try {
+    if (__sameValue(actual, expected)) {
+      return;
+    }
+  } catch (error) {
+    throw new Test262Error((message ?? "") + " (_isSameValue operation threw) " + error);
+  }
+
+  if (message === undefined) {
+    message = "";
+  } else {
+    message += " ";
+  }
+
+  message += "Expected SameValue(«" + __assertToString(actual) + "», «" + __assertToString(expected) + "») to be true";
+  throw new Test262Error(message);
 }
 
 function __assertNotSameValue(actual, expected, message) {
-  if (__sameValue(actual, expected)) {
-    __ayyFail(message ?? "notSameValue");
+  if (!__sameValue(actual, expected)) {
+    return;
   }
+
+  if (message === undefined) {
+    message = "";
+  } else {
+    message += " ";
+  }
+
+  message += "Expected SameValue(«" + __assertToString(actual) + "», «" + __assertToString(expected) + "») to be false";
+  throw new Test262Error(message);
 }
 
 function __ayyAssertThrows(expectedErrorConstructor, func, message) {
-  var caught = false;
-  var caughtError = undefined;
+  var expectedName, actualName;
+
+  if (typeof func !== "function") {
+    throw new Test262Error("assert.throws requires two arguments: the error constructor and a function to run");
+  }
+
+  if (message === undefined) {
+    message = "";
+  } else {
+    message += " ";
+  }
 
   try {
     func();
-  } catch (error) {
-    caught = true;
-    caughtError = error;
+  } catch (thrown) {
+    if (typeof thrown !== "object" || thrown === null) {
+      throw new Test262Error(message + "Thrown value was not an object!");
+    } else if (thrown.constructor !== expectedErrorConstructor) {
+      expectedName = expectedErrorConstructor.name;
+      actualName = thrown.constructor.name;
+      if (expectedName === actualName) {
+        message += "Expected a " + expectedName + " but got a different error constructor with the same name";
+      } else {
+        message += "Expected a " + expectedName + " but got a " + actualName;
+      }
+      throw new Test262Error(message);
+    }
+    return;
   }
 
-  if (!caught) {
-    __ayyFail(message ?? "assert.throws" );
-  }
-
-  if (caughtError === null || typeof caughtError !== "object") {
-    __ayyFail(message ?? "assert.throws");
-  }
-
-  if (caughtError.constructor !== expectedErrorConstructor) {
-    __ayyFail(message ?? "assert.throws");
-  }
+  throw new Test262Error(message + "Expected a " + expectedErrorConstructor.name + " to be thrown but no exception was thrown at all");
 }
 
 assert._isSameValue = __sameValue;
+assert._toString = __assertToString;
 assert.sameValue = __assertSameValue;
 assert.notSameValue = __assertNotSameValue;
 assert.throws = __ayyAssertThrows;
@@ -80,7 +154,7 @@ function compareArray(actual, expected) {
   if (actual.length !== expected.length) {
     return false;
   }
-  for (var i = 0; i < actual.length; i = i + 1) {
+  for (var i = 0; i < actual.length; i += 1) {
     if (!__sameValue(actual[i], expected[i])) {
       return false;
     }
@@ -94,14 +168,9 @@ compareArray.format = function (arrayLike) {
 
 assert.compareArray = function (actual, expected, message) {
   if (!compareArray(actual, expected)) {
-    __ayyFail(message ?? "compareArray");
+    throw new Test262Error(message ?? "compareArray");
   }
 };
-
-function Test262Error(message) {
-  this.name = "Test262Error";
-  this.message = message ?? "";
-}
 "#;
 
 const FN_GLOBAL_OBJECT_PRELUDE: &str = r#"
@@ -290,162 +359,6 @@ function MayNeedBigInt(ta, n) {
     return BigInt(n);
   }
   return n;
-}
-"#;
-
-const PROPERTY_HELPER_PRELUDE: &str = r#"
-function __propertyHelperSameValue(left, right) {
-  if (left === right) {
-    return left !== 0 || 1 / left === 1 / right;
-  }
-  return left !== left && right !== right;
-}
-
-function __propertyHelperHasOwnProperty(object, name) {
-  return Object.prototype.hasOwnProperty.call(object, name);
-}
-
-function __propertyHelperIsEnumerable(object, name) {
-  var stringCheck = typeof name !== "string";
-
-  if (typeof name === "string") {
-    for (var key in object) {
-      if (key === name) {
-        stringCheck = true;
-        break;
-      }
-    }
-  }
-
-  return (
-    stringCheck &&
-    __propertyHelperHasOwnProperty(object, name) &&
-    Object.prototype.propertyIsEnumerable.call(object, name)
-  );
-}
-
-function __propertyHelperIsWritable(object, name) {
-  var hadValue = __propertyHelperHasOwnProperty(object, name);
-  var oldValue = object[name];
-  var newValue = oldValue === "unlikelyValue" ? "unlikelyValue2" : "unlikelyValue";
-  var writeSucceeded;
-
-  try {
-    object[name] = newValue;
-  } catch (error) {
-    if (!(error instanceof TypeError)) {
-      throw error;
-    }
-  }
-
-  writeSucceeded = __propertyHelperSameValue(object[name], newValue);
-
-  if (writeSucceeded) {
-    if (hadValue) {
-      object[name] = oldValue;
-    } else {
-      delete object[name];
-    }
-  }
-
-  return writeSucceeded;
-}
-
-function __propertyHelperIsConfigurable(object, name) {
-  try {
-    delete object[name];
-  } catch (error) {
-    if (!(error instanceof TypeError)) {
-      throw error;
-    }
-  }
-  return !__propertyHelperHasOwnProperty(object, name);
-}
-
-function verifyProperty(object, name, descriptor) {
-  __assert(
-    arguments.length > 2,
-    "verifyProperty should receive at least 3 arguments: obj, name, and descriptor"
-  );
-
-  var originalDescriptor = Object.getOwnPropertyDescriptor(object, name);
-  var nameString = String(name);
-
-  if (descriptor === undefined) {
-    __assertSameValue(
-      originalDescriptor,
-      undefined,
-      "obj['" + nameString + "'] descriptor should be undefined"
-    );
-    return true;
-  }
-
-  __assert(
-    __propertyHelperHasOwnProperty(object, name),
-    "obj should have an own property " + nameString
-  );
-  __assertNotSameValue(
-    descriptor,
-    null,
-    "The desc argument should be an object or undefined, null"
-  );
-  __assertSameValue(
-    typeof descriptor,
-    "object",
-    "The desc argument should be an object or undefined, " + String(descriptor)
-  );
-
-  if (__propertyHelperHasOwnProperty(descriptor, "value")) {
-    __assert(
-      __propertyHelperSameValue(descriptor.value, originalDescriptor.value),
-      "obj['" + nameString + "'] descriptor value should be " + descriptor.value
-    );
-    __assert(
-      __propertyHelperSameValue(descriptor.value, object[name]),
-      "obj['" + nameString + "'] value should be " + descriptor.value
-    );
-  }
-
-  if (
-    __propertyHelperHasOwnProperty(descriptor, "writable") &&
-    descriptor.writable !== undefined
-  ) {
-    __assert(
-      descriptor.writable === originalDescriptor.writable &&
-        descriptor.writable === __propertyHelperIsWritable(object, name),
-      "obj['" + nameString + "'] descriptor should " +
-        (descriptor.writable ? "" : "not ") +
-        "be writable"
-    );
-  }
-
-  if (
-    __propertyHelperHasOwnProperty(descriptor, "enumerable") &&
-    descriptor.enumerable !== undefined
-  ) {
-    __assert(
-      descriptor.enumerable === originalDescriptor.enumerable &&
-        descriptor.enumerable === __propertyHelperIsEnumerable(object, name),
-      "obj['" + nameString + "'] descriptor should " +
-        (descriptor.enumerable ? "" : "not ") +
-        "be enumerable"
-    );
-  }
-
-  if (
-    __propertyHelperHasOwnProperty(descriptor, "configurable") &&
-    descriptor.configurable !== undefined
-  ) {
-    __assert(
-      descriptor.configurable === originalDescriptor.configurable &&
-        descriptor.configurable === __propertyHelperIsConfigurable(object, name),
-      "obj['" + nameString + "'] descriptor should " +
-        (descriptor.configurable ? "" : "not ") +
-        "be configurable"
-    );
-  }
-
-  return true;
 }
 "#;
 
@@ -965,7 +878,6 @@ fn include_prelude(include: &str, harness_dir: &Path) -> Option<String> {
         "compareArray.js" => Some(String::new()),
         "fnGlobalObject.js" => Some(FN_GLOBAL_OBJECT_PRELUDE.to_string()),
         "asyncHelpers.js" => Some(ASYNC_HELPERS_PRELUDE.to_string()),
-        "propertyHelper.js" => Some(PROPERTY_HELPER_PRELUDE.to_string()),
         "decimalToHexString.js" => Some(DECIMAL_TO_HEX_STRING_PRELUDE.to_string()),
         "resizableArrayBufferUtils.js" => Some(RESIZABLE_ARRAYBUFFER_UTILS_PRELUDE.to_string()),
         _ => fs::read_to_string(harness_dir.join(include)).ok(),
@@ -1162,6 +1074,20 @@ mod tests {
         assert!(rewritten.contains("assert.sameValue = __assertSameValue;"));
         assert!(rewritten.contains("assert.notSameValue = __assertNotSameValue;"));
         assert!(rewritten.contains("assert.throws = __ayyAssertThrows;"));
+    }
+
+    #[test]
+    fn exposes_callable_assert_to_harness_preludes() {
+        let rewritten = rewrite_for_supported_subset(
+            &Metadata::default(),
+            "",
+            Path::new(".cache/test262/harness"),
+        )
+        .unwrap();
+
+        assert!(rewritten.contains("function assert(mustBeTrue, message) {"));
+        assert!(rewritten.contains("globalThis.assert = assert;"));
+        assert!(rewritten.contains("assert._toString = __assertToString;"));
     }
 
     #[test]

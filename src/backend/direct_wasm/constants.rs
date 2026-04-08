@@ -60,6 +60,7 @@ pub(in crate::backend::direct_wasm) const IOVEC_OFFSET: u32 = 0;
 pub(in crate::backend::direct_wasm) const NWRITTEN_OFFSET: u32 = 8;
 pub(in crate::backend::direct_wasm) const CHAR_OFFSET: u32 = 16;
 pub(in crate::backend::direct_wasm) const DATA_START_OFFSET: u32 = 64;
+pub(in crate::backend::direct_wasm) const WASM_MEMORY_PAGE_SIZE: u32 = 65_536;
 
 pub(in crate::backend::direct_wasm) const NATIVE_ERROR_NAMES: [&str;
     JS_NATIVE_ERROR_VALUE_LIMIT as usize] = [

@@ -5,10 +5,26 @@ impl Lowerer {
         &mut self,
         class_declaration: &ClassDecl,
     ) -> Result<Vec<Statement>> {
-        self.lower_class_definition(
-            &class_declaration.class,
-            self.resolve_binding_name(class_declaration.ident.sym.as_ref()),
-        )
+        Ok(vec![Statement::Declaration {
+            body: self.lower_class_definition_with_mode(
+                &class_declaration.class,
+                self.resolve_binding_name(class_declaration.ident.sym.as_ref()),
+                false,
+            )?,
+        }])
+    }
+
+    pub(crate) fn lower_generator_class_declaration(
+        &mut self,
+        class_declaration: &ClassDecl,
+    ) -> Result<Vec<Statement>> {
+        Ok(vec![Statement::Declaration {
+            body: self.lower_class_definition_with_mode(
+                &class_declaration.class,
+                self.resolve_binding_name(class_declaration.ident.sym.as_ref()),
+                true,
+            )?,
+        }])
     }
 
     pub(crate) fn lower_class_expression(
@@ -16,15 +32,40 @@ impl Lowerer {
         class_expression: &swc_ecma_ast::ClassExpr,
         name_hint: Option<&str>,
     ) -> Result<Expression> {
-        let class_name = class_expression
+        let explicit_name = class_expression
             .ident
             .as_ref()
-            .map(|identifier| identifier.sym.to_string())
-            .or_else(|| name_hint.map(str::to_string))
+            .map(|identifier| identifier.sym.to_string());
+        let pushed_scope = explicit_name.is_some();
+        if let Some(explicit_name) = explicit_name.as_ref() {
+            self.push_binding_scope(vec![explicit_name.clone()]);
+            let scoped_name = self.fresh_scoped_binding_name(explicit_name);
+            if let Some(scope) = self.binding_scopes.last_mut() {
+                scope.renames.insert(explicit_name.clone(), scoped_name);
+            }
+        }
+        let class_name = explicit_name
+            .as_ref()
+            .map(|name| self.resolve_binding_name(name))
             .unwrap_or_else(|| self.fresh_temporary_name("class_expr"));
+        let display_name = explicit_name
+            .or_else(|| name_hint.map(str::to_string))
+            .unwrap_or_default();
         let init_name = self.fresh_temporary_name("class_init");
-        let mut init_body =
-            self.lower_class_definition(&class_expression.class, class_name.clone())?;
+        let init_body_result = self.lower_class_definition_with_mode(
+            &class_expression.class,
+            class_name.clone(),
+            false,
+        );
+        if pushed_scope {
+            self.pop_binding_scope();
+        }
+        let mut init_body = init_body_result?;
+        init_body.push(define_property_statement(
+            Expression::Identifier(class_name.clone()),
+            Expression::String("name".to_string()),
+            data_property_descriptor(Expression::String(display_name), false, false, true),
+        ));
         init_body.push(Statement::Return(Expression::Identifier(class_name)));
 
         self.functions.push(FunctionDeclaration {
@@ -38,6 +79,7 @@ impl Lowerer {
             mapped_arguments: false,
             strict: true,
             lexical_this: false,
+            derived_constructor: false,
             length: 0,
         });
 
@@ -47,10 +89,54 @@ impl Lowerer {
         })
     }
 
-    pub(crate) fn lower_class_definition(
+    pub(crate) fn lower_generator_class_expression(
+        &mut self,
+        class_expression: &swc_ecma_ast::ClassExpr,
+        name_hint: Option<&str>,
+    ) -> Result<(Vec<Statement>, Expression)> {
+        let explicit_name = class_expression
+            .ident
+            .as_ref()
+            .map(|identifier| identifier.sym.to_string());
+        let pushed_scope = explicit_name.is_some();
+        if let Some(explicit_name) = explicit_name.as_ref() {
+            self.push_binding_scope(vec![explicit_name.clone()]);
+            let scoped_name = self.fresh_scoped_binding_name(explicit_name);
+            if let Some(scope) = self.binding_scopes.last_mut() {
+                scope.renames.insert(explicit_name.clone(), scoped_name);
+            }
+        }
+        let class_name = explicit_name
+            .as_ref()
+            .map(|name| self.resolve_binding_name(name))
+            .unwrap_or_else(|| self.fresh_temporary_name("class_expr"));
+        let display_name = explicit_name
+            .or_else(|| name_hint.map(str::to_string))
+            .unwrap_or_default();
+
+        let statements_result = self.lower_class_definition_with_mode(
+            &class_expression.class,
+            class_name.clone(),
+            true,
+        );
+        if pushed_scope {
+            self.pop_binding_scope();
+        }
+        let mut statements = statements_result?;
+        statements.push(define_property_statement(
+            Expression::Identifier(class_name.clone()),
+            Expression::String("name".to_string()),
+            data_property_descriptor(Expression::String(display_name), false, false, true),
+        ));
+
+        Ok((statements, Expression::Identifier(class_name)))
+    }
+
+    pub(crate) fn lower_class_definition_with_mode(
         &mut self,
         class: &Class,
         binding_name: String,
+        generator_body: bool,
     ) -> Result<Vec<Statement>> {
         self.private_name_scopes
             .push(self.class_private_name_map(class, &binding_name));
@@ -83,6 +169,7 @@ impl Lowerer {
         };
 
         let mut statements = Vec::new();
+        let mut instance_public_field_initializers = Vec::new();
         if let (Some(super_expression), Some(super_name)) =
             (&class.super_class, super_name.as_ref())
         {
@@ -97,7 +184,7 @@ impl Lowerer {
             Statement::Let {
                 name: binding_name.clone(),
                 mutable: true,
-                value: Expression::Identifier(constructor_name),
+                value: Expression::Identifier(constructor_name.clone()),
             },
             define_property_statement(
                 class_identifier.clone(),
@@ -126,9 +213,79 @@ impl Lowerer {
                 data_property_descriptor(class_identifier.clone(), true, false, true),
             ),
         ]);
+        if let Some(super_name) = super_name.as_ref() {
+            statements.push(Statement::Expression(Expression::Call {
+                callee: Box::new(Expression::Member {
+                    object: Box::new(Expression::Identifier("Object".to_string())),
+                    property: Box::new(Expression::String("setPrototypeOf".to_string())),
+                }),
+                arguments: vec![
+                    CallArgument::Expression(class_identifier.clone()),
+                    CallArgument::Expression(Expression::Identifier(super_name.clone())),
+                ],
+            }));
+        }
 
         for member in &class.body {
-            statements.extend(self.lower_class_member(member, &binding_name, &prototype_target)?);
+            match member {
+                ClassMember::ClassProp(property) => {
+                    let (mut property_prefix, lowered_property_name) =
+                        self.lower_class_prop_name(&property.key, generator_body)?;
+                    statements.append(&mut property_prefix);
+                    let property_name = match &property.key {
+                        PropName::Computed(_) => {
+                            let computed_name = self.fresh_temporary_name("class_field_name");
+                            statements.push(Statement::Let {
+                                name: computed_name.clone(),
+                                mutable: false,
+                                value: lowered_property_name,
+                            });
+                            Expression::Identifier(computed_name)
+                        }
+                        _ => lowered_property_name,
+                    };
+                    let value = property
+                        .value
+                        .as_ref()
+                        .map(|value| self.lower_expression(value))
+                        .transpose()?
+                        .unwrap_or(Expression::Undefined);
+                    if property.is_static {
+                        statements.push(Statement::AssignMember {
+                            object: class_identifier.clone(),
+                            property: property_name,
+                            value,
+                        });
+                    } else {
+                        instance_public_field_initializers.push(Statement::AssignMember {
+                            object: Expression::This,
+                            property: property_name,
+                            value,
+                        });
+                    }
+                }
+                _ => {
+                    statements.extend(self.lower_class_member_with_mode(
+                        member,
+                        &binding_name,
+                        &prototype_target,
+                        generator_body,
+                    )?);
+                }
+            }
+        }
+
+        if !instance_public_field_initializers.is_empty() {
+            let constructor = self
+                .functions
+                .iter_mut()
+                .rfind(|function| function.name == constructor_name)
+                .context(
+                    "lowered class constructor should exist for public field initialization",
+                )?;
+            constructor
+                .body
+                .splice(0..0, instance_public_field_initializers);
         }
 
         for member in &class.body {
@@ -191,6 +348,21 @@ impl Lowerer {
         };
 
         let mut body = body;
+        body.insert(
+            0,
+            Statement::If {
+                condition: Expression::Binary {
+                    op: BinaryOp::Equal,
+                    left: Box::new(Expression::NewTarget),
+                    right: Box::new(Expression::Undefined),
+                },
+                then_branch: vec![Statement::Throw(Expression::New {
+                    callee: Box::new(Expression::Identifier("TypeError".to_string())),
+                    arguments: Vec::new(),
+                })],
+                else_branch: Vec::new(),
+            },
+        );
         for member in class.body.iter().rev() {
             if let ClassMember::PrivateProp(property) = member {
                 if property.is_static {
@@ -225,24 +397,33 @@ impl Lowerer {
             mapped_arguments: false,
             strict: true,
             lexical_this: false,
+            derived_constructor: super_name.is_some(),
             length,
         });
 
         Ok(generated_name)
     }
 
-    pub(crate) fn lower_class_member(
+    pub(crate) fn lower_class_member_with_mode(
         &mut self,
         member: &ClassMember,
         class_name: &str,
         prototype_target: &Expression,
+        generator_body: bool,
     ) -> Result<Vec<Statement>> {
         match member {
             ClassMember::Constructor(_) | ClassMember::Empty(_) | ClassMember::PrivateProp(_) => {
                 Ok(Vec::new())
             }
+            ClassMember::StaticBlock(block) => {
+                self.strict_modes.push(true);
+                let lowered = self.lower_statements(&block.body.stmts, false, false);
+                self.strict_modes.pop();
+                lowered
+            }
             ClassMember::Method(method) => {
-                let property = self.lower_prop_name(&method.key)?;
+                let (mut prefix, property) =
+                    self.lower_class_prop_name(&method.key, generator_body)?;
                 let target = if method.is_static {
                     Expression::Identifier(class_name.to_string())
                 } else {
@@ -252,21 +433,23 @@ impl Lowerer {
                     if let Some(private_alias) =
                         self.lower_private_method_alias_getter(method, &target)?
                     {
-                        return Ok(vec![define_property_statement(
+                        prefix.push(define_property_statement(
                             target,
                             property,
                             data_property_descriptor(private_alias, false, false, true),
-                        )]);
+                        ));
+                        return Ok(prefix);
                     }
                 }
-                self.lower_defined_class_method(
+                prefix.extend(self.lower_defined_class_method(
                     class_name,
                     prototype_target,
                     method.is_static,
                     method.kind,
                     property,
                     &method.function,
-                )
+                )?);
+                Ok(prefix)
             }
             ClassMember::PrivateMethod(method) => {
                 let property = self.lower_private_name(&method.key)?;
@@ -281,6 +464,37 @@ impl Lowerer {
             }
             other => bail!("unsupported class member: {other:?}"),
         }
+    }
+
+    fn lower_class_prop_name(
+        &mut self,
+        name: &PropName,
+        generator_body: bool,
+    ) -> Result<(Vec<Statement>, Expression)> {
+        if !generator_body {
+            return Ok((Vec::new(), self.lower_prop_name(name)?));
+        }
+
+        Ok(match name {
+            PropName::Ident(identifier) => {
+                (Vec::new(), Expression::String(identifier.sym.to_string()))
+            }
+            PropName::Str(string) => (
+                Vec::new(),
+                Expression::String(string.value.to_string_lossy().into_owned()),
+            ),
+            PropName::Num(number) => (Vec::new(), Expression::Number(number.value)),
+            PropName::Computed(computed) => {
+                if let Some((prefix, value)) =
+                    self.lower_generator_assignment_value(&computed.expr)?
+                {
+                    (prefix, value)
+                } else {
+                    (Vec::new(), self.lower_expression(&computed.expr)?)
+                }
+            }
+            _ => bail!("unsupported object property key"),
+        })
     }
 
     pub(crate) fn lower_private_method_alias_getter(
@@ -359,6 +573,25 @@ impl Lowerer {
         property: Expression,
         descriptor: Expression,
     ) -> Vec<Statement> {
+        if matches!(&property, Expression::String(name) if name == "prototype") {
+            return vec![Statement::Throw(Expression::New {
+                callee: Box::new(Expression::Identifier("TypeError".to_string())),
+                arguments: Vec::new(),
+            })];
+        }
+
+        if matches!(
+            property,
+            Expression::String(_)
+                | Expression::Number(_)
+                | Expression::BigInt(_)
+                | Expression::Bool(_)
+                | Expression::Null
+                | Expression::Undefined
+        ) {
+            return vec![define_property_statement(target, property, descriptor)];
+        }
+
         let property_name = self.fresh_temporary_name("class_prop");
         let property_identifier = Expression::Identifier(property_name.clone());
 
@@ -405,6 +638,7 @@ impl Lowerer {
             mapped_arguments: false,
             strict: true,
             lexical_this: false,
+            derived_constructor: false,
             length: expected_argument_count(function.params.iter().map(|parameter| &parameter.pat)),
         });
 

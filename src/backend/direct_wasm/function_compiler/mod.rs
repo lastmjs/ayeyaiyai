@@ -3,6 +3,7 @@ use super::*;
 mod bindings;
 mod calls;
 mod core;
+mod domains;
 mod emission;
 mod specialization;
 mod support;

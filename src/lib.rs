@@ -21,9 +21,6 @@ pub fn compile_file(path: &Path, options: &CompileOptions) -> Result<()> {
 }
 
 pub fn compile_file_with_goal(path: &Path, options: &CompileOptions, module: bool) -> Result<()> {
-    if module {
-        bail!("module goals are not yet supported by the direct wasm backend");
-    }
     let program = if module {
         frontend::bundle_module_entry(path)?
     } else {
@@ -45,9 +42,6 @@ pub fn compile_source_with_goal(
     options: &CompileOptions,
     module: bool,
 ) -> Result<()> {
-    if module {
-        bail!("module goals are not yet supported by the direct wasm backend");
-    }
     let program = if module {
         frontend::parse_module_goal(source)?
     } else {

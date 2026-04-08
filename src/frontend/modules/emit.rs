@@ -37,10 +37,11 @@ impl ModuleLinker {
                     .as_ref()
                     .map(|identifier| identifier.sym.to_string())
                     .unwrap_or_else(|| "default".to_string());
-                body_statements.extend(
-                    self.lowerer
-                        .lower_class_definition(&class_expression.class, local_name.clone())?,
-                );
+                body_statements.extend(self.lowerer.lower_class_definition_with_mode(
+                    &class_expression.class,
+                    local_name.clone(),
+                    false,
+                )?);
                 Ok(Expression::Identifier(local_name))
             }
             other => bail!("unsupported default export declaration: {other:?}"),
@@ -108,6 +109,7 @@ impl ModuleLinker {
                 mapped_arguments: false,
                 strict: true,
                 lexical_this: false,
+                derived_constructor: false,
                 length: 0,
             };
             rewrite_import_bindings_in_function(&mut getter_function, import_bindings)?;

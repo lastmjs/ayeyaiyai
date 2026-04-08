@@ -22,6 +22,7 @@ mod function_compiler;
 mod helpers;
 mod program_compiler;
 mod state;
+mod static_eval;
 
 use self::{
     analysis::*,
@@ -33,7 +34,9 @@ use self::{
     },
     function_compiler::*,
     helpers::*,
+    program_compiler::*,
     state::*,
+    static_eval::*,
 };
 
 pub(in crate::backend) fn try_emit_wasm(program: &Program) -> Result<Option<Vec<u8>>> {

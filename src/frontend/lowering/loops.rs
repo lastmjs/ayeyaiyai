@@ -6,6 +6,50 @@ impl Lowerer {
         for_of_statement: &ForOfStmt,
         allow_return: bool,
     ) -> Result<Vec<Statement>> {
+        self.lower_for_of_statement_with_body_mode(for_of_statement, allow_return, false)
+    }
+
+    pub(crate) fn lower_generator_for_of_statement(
+        &mut self,
+        for_of_statement: &ForOfStmt,
+        allow_return: bool,
+    ) -> Result<Vec<Statement>> {
+        if let Some(lowered) =
+            self.lower_generator_for_await_yield_delegate_statement(for_of_statement)?
+        {
+            return Ok(lowered);
+        }
+
+        self.lower_for_of_statement_with_body_mode(for_of_statement, allow_return, true)
+    }
+
+    fn lower_generator_for_await_yield_delegate_statement(
+        &mut self,
+        for_of_statement: &ForOfStmt,
+    ) -> Result<Option<Vec<Statement>>> {
+        if !for_of_statement.is_await {
+            return Ok(None);
+        }
+
+        let Some(binding_name) = for_of_binding_identifier_name(&for_of_statement.left) else {
+            return Ok(None);
+        };
+
+        if !for_await_body_yields_binding(&for_of_statement.body, binding_name) {
+            return Ok(None);
+        }
+
+        Ok(Some(vec![Statement::YieldDelegate {
+            value: self.lower_expression(&for_of_statement.right)?,
+        }]))
+    }
+
+    fn lower_for_of_statement_with_body_mode(
+        &mut self,
+        for_of_statement: &ForOfStmt,
+        allow_return: bool,
+        generator_body: bool,
+    ) -> Result<Vec<Statement>> {
         let iterator_name = self.fresh_temporary_name("for_of_iter");
         let step_name = self.fresh_temporary_name("for_of_step");
         let done_name = self.fresh_temporary_name("for_of_done");
@@ -54,7 +98,11 @@ impl Lowerer {
             },
         ];
         body.extend(binding.per_iteration);
-        body.extend(self.lower_block_or_statement(&for_of_statement.body, allow_return, true)?);
+        body.extend(if generator_body {
+            self.lower_generator_loop_body(&for_of_statement.body, allow_return)?
+        } else {
+            self.lower_block_or_statement(&for_of_statement.body, allow_return, true)?
+        });
 
         let mut lowered = vec![Statement::Let {
             name: iterator_name,
@@ -345,4 +393,58 @@ impl Lowerer {
         });
         Ok(())
     }
+}
+
+fn for_of_binding_identifier_name(left: &ForHead) -> Option<&str> {
+    match left {
+        ForHead::Pat(pattern) => {
+            let Pat::Ident(identifier) = &**pattern else {
+                return None;
+            };
+            Some(identifier.id.sym.as_ref())
+        }
+        ForHead::VarDecl(variable_declaration) => {
+            let [declarator] = &variable_declaration.decls[..] else {
+                return None;
+            };
+            if declarator.init.is_some() {
+                return None;
+            }
+            let Pat::Ident(identifier) = &declarator.name else {
+                return None;
+            };
+            Some(identifier.id.sym.as_ref())
+        }
+        _ => None,
+    }
+}
+
+fn for_await_body_yields_binding(statement: &Stmt, binding_name: &str) -> bool {
+    let statement = match statement {
+        Stmt::Block(BlockStmt { stmts, .. }) => {
+            let [statement] = &stmts[..] else {
+                return false;
+            };
+            statement
+        }
+        other => other,
+    };
+
+    let Stmt::Expr(ExprStmt { expr, .. }) = statement else {
+        return false;
+    };
+    let Expr::Yield(yield_expression) = &**expr else {
+        return false;
+    };
+    if yield_expression.delegate {
+        return false;
+    }
+    let Some(argument) = yield_expression.arg.as_deref() else {
+        return false;
+    };
+    let Expr::Ident(identifier) = argument else {
+        return false;
+    };
+
+    identifier.sym == binding_name
 }

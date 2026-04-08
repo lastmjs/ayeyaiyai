@@ -18,6 +18,18 @@ pub(crate) use syntax::{
     validate_expression_syntax, validate_function_syntax, validate_statement_syntax,
 };
 
+fn source_slice_for_span<'a>(
+    file: &'a swc_common::SourceFile,
+    span: swc_common::Span,
+) -> Result<&'a str> {
+    let source: &str = file.src.as_ref();
+    let start = span.lo.to_usize() - file.start_pos.to_usize();
+    let end = span.hi.to_usize() - file.start_pos.to_usize();
+    source
+        .get(start..end)
+        .context("expression span fell outside the source file")
+}
+
 pub(super) fn validate_import_attributes(attributes: Option<&ObjectLit>) -> Result<()> {
     let Some(attributes) = attributes else {
         return Ok(());

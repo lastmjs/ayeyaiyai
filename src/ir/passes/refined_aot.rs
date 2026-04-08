@@ -138,9 +138,9 @@ impl<'a> RefinedAotValidator<'a> {
 
     fn validate_statement(&mut self, statement: &Statement) -> Result<()> {
         match statement {
-            Statement::Block { body } | Statement::Labeled { body, .. } => {
-                self.validate_scoped_statement_list(body, [])
-            }
+            Statement::Declaration { body }
+            | Statement::Block { body }
+            | Statement::Labeled { body, .. } => self.validate_scoped_statement_list(body, []),
             Statement::Var { name, value } => {
                 self.validate_expression(value)?;
                 let kind = self.infer_known_kind(value);

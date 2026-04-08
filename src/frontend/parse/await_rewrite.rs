@@ -81,9 +81,11 @@ pub(super) fn rewrite_script_await_identifiers(source: &str) -> Option<String> {
                 }
                 if is_ident_start(character) || starts_unicode_escape(&characters, index) {
                     let mut word = String::new();
+                    let mut raw = String::new();
                     while index < characters.len() {
                         if is_ident_continue(characters[index]) {
                             word.push(characters[index]);
+                            raw.push(characters[index]);
                             index += 1;
                         } else if starts_unicode_escape(&characters, index) {
                             let Some((next_index, decoded)) =
@@ -92,6 +94,7 @@ pub(super) fn rewrite_script_await_identifiers(source: &str) -> Option<String> {
                                 break;
                             };
                             word.push(decoded);
+                            raw.extend(characters[index..next_index].iter());
                             index = next_index;
                         } else {
                             break;
@@ -102,7 +105,7 @@ pub(super) fn rewrite_script_await_identifiers(source: &str) -> Option<String> {
                         rewritten.push_str("__ayy_await_ident");
                         changed = true;
                     } else {
-                        rewritten.push_str(&word);
+                        rewritten.push_str(&raw);
                     }
                     continue;
                 }

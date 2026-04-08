@@ -33,6 +33,7 @@ impl Lowerer {
             mapped_arguments: self.function_has_mapped_arguments(&function_expression.function),
             strict: self.function_strict_mode(&function_expression.function),
             lexical_this: false,
+            derived_constructor: false,
             length: expected_argument_count(
                 function_expression
                     .function
@@ -73,6 +74,7 @@ impl Lowerer {
             mapped_arguments: self.function_has_mapped_arguments(&function_declaration.function),
             strict: self.function_strict_mode(&function_declaration.function),
             lexical_this: false,
+            derived_constructor: false,
             length: expected_argument_count(
                 function_declaration
                     .function
@@ -131,6 +133,7 @@ impl Lowerer {
             mapped_arguments: self.function_has_mapped_arguments(&function_expression.function),
             strict: self.function_strict_mode(&function_expression.function),
             lexical_this: false,
+            derived_constructor: false,
             length: expected_argument_count(
                 function_expression
                     .function
@@ -180,6 +183,7 @@ impl Lowerer {
             mapped_arguments: false,
             strict: self.arrow_strict_mode(arrow_expression),
             lexical_this: true,
+            derived_constructor: false,
             length: expected_argument_count(arrow_expression.params.iter()),
         });
 
@@ -228,7 +232,7 @@ impl Lowerer {
         self.pop_binding_scope();
         self.strict_modes.pop();
         lowered.map(|(params, body)| {
-            let body = if function.is_async {
+            let body = if function.is_async && function.is_generator {
                 asyncify_statements(body).0
             } else {
                 body

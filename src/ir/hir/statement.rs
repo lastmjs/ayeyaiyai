@@ -2,6 +2,9 @@ use super::{Expression, SwitchCase};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
+    Declaration {
+        body: Vec<Statement>,
+    },
     Block {
         body: Vec<Statement>,
     },

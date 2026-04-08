@@ -133,6 +133,9 @@ impl StaticFunctionConstructorLowerer {
 
     fn lower_statement(&mut self, statement: Statement) -> Result<Statement> {
         match statement {
+            Statement::Declaration { body } => Ok(Statement::Declaration {
+                body: self.lower_statement_list(body)?,
+            }),
             Statement::Block { body } => Ok(Statement::Block {
                 body: self.lower_scoped_statement_list(body, [])?,
             }),

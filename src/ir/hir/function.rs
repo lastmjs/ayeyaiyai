@@ -12,6 +12,7 @@ pub struct FunctionDeclaration {
     pub mapped_arguments: bool,
     pub strict: bool,
     pub lexical_this: bool,
+    pub derived_constructor: bool,
     pub length: usize,
 }
 

@@ -135,7 +135,9 @@ pub fn walk_parameter_mut<V: VisitorMut + ?Sized>(visitor: &mut V, parameter: &m
 
 pub fn walk_statement<V: Visitor + ?Sized>(visitor: &mut V, statement: &Statement) {
     match statement {
-        Statement::Block { body } | Statement::Labeled { body, .. } => {
+        Statement::Declaration { body }
+        | Statement::Block { body }
+        | Statement::Labeled { body, .. } => {
             for statement in body {
                 visitor.visit_statement(statement);
             }
@@ -257,7 +259,9 @@ pub fn walk_statement<V: Visitor + ?Sized>(visitor: &mut V, statement: &Statemen
 
 pub fn walk_statement_mut<V: VisitorMut + ?Sized>(visitor: &mut V, statement: &mut Statement) {
     match statement {
-        Statement::Block { body } | Statement::Labeled { body, .. } => {
+        Statement::Declaration { body }
+        | Statement::Block { body }
+        | Statement::Labeled { body, .. } => {
             for statement in body {
                 visitor.visit_statement_mut(statement);
             }
@@ -650,6 +654,7 @@ mod tests {
                 mapped_arguments: false,
                 strict: false,
                 lexical_this: false,
+                derived_constructor: false,
                 length: 1,
             }],
             statements: vec![Statement::Expression(Expression::Call {

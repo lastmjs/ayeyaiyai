@@ -28,9 +28,9 @@ impl<'a> ImportBindingRewriter<'a> {
 
     fn rewrite_statement(&mut self, statement: &mut Statement) -> Result<()> {
         match statement {
-            Statement::Block { body } | Statement::Labeled { body, .. } => {
-                self.rewrite_statement_list(body)
-            }
+            Statement::Declaration { body }
+            | Statement::Block { body }
+            | Statement::Labeled { body, .. } => self.rewrite_statement_list(body),
             Statement::Var { value, .. }
             | Statement::Let { value, .. }
             | Statement::Expression(value)

@@ -47,11 +47,15 @@ pub(super) fn encode_function_section(user_functions: &[UserFunction]) -> Vec<u8
     bytes
 }
 
-pub(super) fn encode_memory_section() -> Vec<u8> {
+pub(in crate::backend::direct_wasm) fn required_memory_pages(data_end_offset: u32) -> u32 {
+    data_end_offset.max(1).div_ceil(WASM_MEMORY_PAGE_SIZE)
+}
+
+pub(super) fn encode_memory_section(initial_pages: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
     push_u32(&mut bytes, 1);
     bytes.push(0x00);
-    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, initial_pages.max(1));
     bytes
 }
 
@@ -128,6 +132,20 @@ pub(super) fn encode_data_section(segments: &[(u32, Vec<u8>)]) -> Vec<u8> {
     }
 
     bytes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computes_required_memory_pages_from_static_data_end() {
+        assert_eq!(required_memory_pages(0), 1);
+        assert_eq!(required_memory_pages(DATA_START_OFFSET), 1);
+        assert_eq!(required_memory_pages(WASM_MEMORY_PAGE_SIZE), 1);
+        assert_eq!(required_memory_pages(WASM_MEMORY_PAGE_SIZE + 1), 2);
+        assert_eq!(required_memory_pages(WASM_MEMORY_PAGE_SIZE * 2), 2);
+    }
 }
 
 pub(super) fn push_section(module: &mut Vec<u8>, section_id: u8, contents: Vec<u8>) {
